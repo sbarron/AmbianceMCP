@@ -60,7 +60,10 @@
     "test:embeddings:direct": "jest --config jest.embedding.config.js src/local/__tests__/**/*.test.ts --verbose",
     "benchmark": "ts-node --esm scripts/benchmark-compactor.ts",
     "benchmark:current": "ts-node --esm scripts/benchmark-compactor.ts .",
-    "test:compactor": "jest src/compactor/"
+    "test:compactor": "jest src/compactor/",
+    "publish:latest": "npm run build && npm publish",
+    "publish:beta": "npm run build && npm publish --tag beta",
+    "publish:alpha": "npm run build && npm publish --tag alpha"
   },
   "dependencies": {
     "@ast-grep/cli": "^0.25.7",
