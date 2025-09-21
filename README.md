@@ -325,21 +325,6 @@ npm run test:compactor
 - **Memory efficient**: ~50MB peak during processing
 - **Fast processing**: 2-5 seconds for typical projects
 
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## 🤝 Support
-
-- **Issues**: [GitHub Issues](https://github.com/ambiance/mcp-server/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/ambiance/mcp-server/discussions)
-
----
-
-**Made with ❤️ by the Ambiance team**
-
-*Intelligent code context for the modern developer*
-
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | **OpenAI Integration** | | | |
@@ -428,17 +413,6 @@ EMBEDDING_RATE_LIMIT_RETRIES=5         # Retry failed requests up to 5 times
 EMBEDDING_RATE_LIMIT_BASE_DELAY=1000   # Base delay between retries (1 second)
 ```
 
-**Smart Rate Limit Features:**
-- **Automatic Retry**: Failed requests retry with exponential backoff
-- **Dynamic Concurrency**: Reduces concurrency when hitting rate limits
-- **Graceful Degradation**: Falls back to local embeddings only for permanent failures
-- **Rate Limit Recovery**: Gradually increases concurrency after rate limit windows
-
-**Performance Guidelines:**
-- **OpenAI Tier 2**: Max 5,000 requests/minute, start with `EMBEDDING_MAX_CONCURRENCY=10`
-- **Sequential Mode** (default): More conservative, reliable for unstable connections
-- **Parallel Mode**: 2-5x faster for large projects, requires stable network
-- **Batch Size**: Larger batches (32-64) are more efficient but use more memory
 
 **Example for large project:**
 ```bash
@@ -478,15 +452,6 @@ LOCAL_STORAGE_PATH=/path/to/local/embeddings/storage
 WORKSPACE_FOLDER=/path/to/your/workspace
 ```
 
-### Local Development Stack
-When running the full Ambiance server locally:
-- **Frontend**: `http://localhost:3000` (React app)
-- **Backend**: `http://localhost:3001` (API server)
-- **Database**: Local PostgreSQL/Supabase instance
-- **MCP Client**: Points to `localhost:3001` via `USING_LOCAL_SERVER_URL`
-
-## 🔍 Troubleshooting
-
 ### Common Issues
 
 **"No tools available"**
@@ -499,18 +464,6 @@ When running the full Ambiance server locally:
 - Ensure project path exists and is readable
 - For OpenAI tools, verify API key is valid
 - For Ambiance cloud tools, check `AMBIANCE_API_KEY` is set, register on website for key.
-
-**"Poor context quality"**
-- Try the enhanced `ambiance_get_context` with OpenAI key
-- Use `includeFiles` parameter to focus on specific areas
-- Increase `maxTokens` for more comprehensive context
-
-### Performance Tips
-
-- Use `local_project_hints` first to understand project structure
-- Focus queries with `includeFiles` parameter
-- Start with lower `maxTokens` and increase as needed
-- For large projects, analyze specific folders first
 
 ### Debugging Server Issues
 
@@ -564,13 +517,6 @@ npm run benchmark:current
 - ✅ >85% test coverage target
 - ✅ Performance benchmarking
 
-## 📊 Performance
-
-- **Processing Speed**: 2-5 seconds for 100-file projects
-- **Memory Usage**: ~50MB peak during processing  
-- **Compression Ratio**: 60-80% token reduction
-- **Multi-Language**: TypeScript, JavaScript, Python, Go, Rust, C/C++, Java
-
 ## 🔒 Security
 
 - ✅ Input validation and sanitization
@@ -583,47 +529,3 @@ npm run benchmark:current
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-## 🤝 Support
-
-- **Issues**: [GitHub Issues](https://github.com/ambiance/mcp-server/issues)
-- **Documentation**: [GitHub Wiki](https://github.com/ambiance/mcp-server/wiki)
-- **Discussions**: [GitHub Discussions](https://github.com/ambiance/mcp-server/discussions)
-
-## 🚀 Beta Release Status
-
-**✅ Completed (Beta v0.1.14):**
-- Core local MCP tooling with semantic compaction
-- Multi-tier intelligence (Local → OpenAI → Cloud)
-- Frontend insights and project analysis tools
-- GitHub repository cloud integration
-- Production-ready error handling and logging
-
-## 🔮 Post-Beta Roadmap
-
-**Phase 1-2 (Next Release):**
-- LMDB storage implementation
-- Incremental parsing capabilities
-- Local semantic index
-- Enhanced performance optimizations
-
-**Phase 3 (Future Release):**
-- Profile and approval enforcement
-- Advanced diagnostics tooling
-- Enterprise security features
-
-**Phase 4 (Future Release):**
-- ACP bridge integration
-- @-mention resolver
-- Advanced collaboration features
-
-**Future Enhancements:**
-- Additional language support (C#, Java, Kotlin)
-- Plugin architecture for custom analyzers
-- Web-based configuration UI
-- Integration with more IDEs and editors
-
----
-
-**Made with ❤️ by the Ambiance team**
-
-*Intelligent code context for the modern developer*
