@@ -1,6 +1,6 @@
 {
   "name": "@jackjackstudios/ambiance-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Standalone MCP server for intelligent code context and analysis with semantic compaction",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
@@ -20,12 +20,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jackjackstudios/AmbianceMCP"
+    "url": "https://github.com/sbarron/AmbianceMCP"
   },
   "bugs": {
-    "url": "https://github.com/jackjackstudios/AmbianceMCP/issues"
+    "url": "https://github.com/sbarron/AmbianceMCP/issues"
   },
-  "homepage": "https://github.com/jackjackstudios/AmbianceMCP#readme",
+  "homepage": "https://github.com/sbarron/AmbianceMCP#readme",
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=8.0.0"
