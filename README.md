@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.1+-blue)](https://www.typescriptlang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/ambiance/mcp-server)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/jackjackstudios/AmbianceMCP)
 
 This is a **MCP (Model Context Protocol)** server that provides intelligent code context through semantic analysis, AST parsing, and token-efficient compression. Add OpenAI-compatible API keys to unlock AI-powered summarization and analysis tools. Core functionality works completely offline - no internet required for basic use.
 
@@ -63,11 +63,66 @@ Ambiance MCP excels at:
 
 ## 🚀 Quick Start (5 Minutes)
 
+### CLI Help
+
+After installation, get help and documentation:
+
+```bash
+# Show help and documentation (if installed globally)
+ambiance-mcp
+
+# Or if installed locally in your project
+npx ambiance-mcp
+
+# Or run the built version directly
+node node_modules/ambiance-mcp/dist/src/cli.js
+```
+
+**What you'll see:**
+```
+🤖 Ambiance MCP Server
+======================
+
+Intelligent code context and analysis for modern IDEs
+
+📖 Documentation & Setup:
+  https://github.com/jackjackstudios/AmbianceMCP#readme
+
+🚀 Quick Start:
+  1. Install: npm install -g @jackjackstudios/ambiance-mcp
+  2. Configure your IDE to use the MCP server
+  3. Set WORKSPACE_FOLDER environment variable
+
+💡 Features:
+  • 60-80% token reduction through semantic compaction
+  • Multi-language support (TypeScript, JavaScript, Python, Go, Rust)
+  • Local embeddings for cost-effective operation
+  • AI enhancement with OpenAI integration
+  • Cloud features for GitHub repository analysis
+
+🔧 Configuration:
+  Set WORKSPACE_FOLDER to your project path
+  Optional: OPENAI_API_KEY for AI features
+  Optional: AMBIANCE_API_KEY for cloud features
+
+📦 Package Information:
+  Version: 0.1.0
+  License: MIT
+  Repository: https://github.com/jackjackstudios/AmbianceMCP
+```
+
 ### 1. Install & Build
 
 ```bash
-git clone https://github.com/ambiance/mcp-server.git
-cd ambiance-mcp-server
+# Option 1: Install globally for CLI access
+npm install -g @jackjackstudios/ambiance-mcp
+
+# Option 2: Install locally in your project
+npm install @jackjackstudios/ambiance-mcp
+
+# Option 3: Build from source
+git clone https://github.com/jackjackstudios/AmbianceMCP.git
+cd AmbianceMCP
 npm install
 npm run build
 ```
