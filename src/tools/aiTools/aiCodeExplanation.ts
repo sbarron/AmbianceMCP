@@ -41,7 +41,7 @@ Accepts absolute paths or relative paths (when workspace can be detected).
 - Best practices and improvement suggestions
 - Context-aware explanations based on surrounding code
 
-**Performance**: 3-10 seconds depending on code complexity`,
+**Performance**: 10-60 seconds depending on code complexity, model type, and context size (configurable via AI_CODE_EXPLANATION_TIMEOUT_MS)`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -83,6 +83,7 @@ Accepts absolute paths or relative paths (when workspace can be detected).
 
 export async function handleAICodeExplanation(args: any): Promise<any> {
   const startTime = Date.now();
+  let baseTimeoutMs = 60000; // Default value
 
   try {
     const {
@@ -156,20 +157,35 @@ export async function handleAICodeExplanation(args: any): Promise<any> {
       focus
     );
 
-    // Calculate timeout based on code length
-    const baseTimeoutMs = 20000; // 20 seconds base for code explanation
+    // Calculate timeout based on code length and model type
+    baseTimeoutMs = parseInt(process.env.AI_CODE_EXPLANATION_TIMEOUT_MS || '60000', 10); // 60 seconds base (configurable)
     const codeMultiplier = Math.max(1, Math.floor(codeContent.length / 5000)); // +1 per 5KB of code
-    const dynamicTimeoutMs = Math.min(180000, baseTimeoutMs * codeMultiplier); // Max 3 minutes
+    const thinkingModelMultiplier = openai.getProviderInfo().model.includes('thinking') ? 3 : 1; // 3x for thinking models
+    const dynamicTimeoutMs = Math.min(
+      600000,
+      baseTimeoutMs * codeMultiplier * thinkingModelMultiplier
+    ); // Max 10 minutes
 
     logger.info('⏱️ Code explanation timeout calculated', {
       codeLength: codeContent.length,
-      timeout: `${dynamicTimeoutMs / 1000}s`,
+      model: openai.getProviderInfo().model,
+      isThinkingModel: openai.getProviderInfo().model.includes('thinking'),
+      codeMultiplier,
+      thinkingModelMultiplier,
+      baseTimeout: `${baseTimeoutMs / 1000}s`,
+      finalTimeout: `${dynamicTimeoutMs / 1000}s`,
+      maxTimeout: '10 minutes',
     });
 
     // Get AI explanation with timeout
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => {
-        reject(new Error(`Code explanation timed out after ${dynamicTimeoutMs / 1000}s`));
+        reject(
+          new Error(
+            `Code explanation timed out after ${dynamicTimeoutMs / 1000}s. ` +
+              `Current timeout: ${baseTimeoutMs / 1000}s base × ${codeMultiplier} (code size) × ${thinkingModelMultiplier} (model type)`
+          )
+        );
       }, dynamicTimeoutMs);
     });
 
@@ -222,7 +238,10 @@ export async function handleAICodeExplanation(args: any): Promise<any> {
       success: false,
       error: error instanceof Error ? error.message : String(error),
       duration: Date.now() - startTime,
-      suggestion: 'Check OpenAI API key and ensure the code/file is accessible',
+      suggestion:
+        error instanceof Error && error.message.includes('timed out')
+          ? `Consider increasing timeout via AI_CODE_EXPLANATION_TIMEOUT_MS environment variable (current: ${baseTimeoutMs / 1000}s). Check OpenAI API key and network connectivity.`
+          : 'Check OpenAI API key and ensure the code/file is accessible',
     };
   }
 }

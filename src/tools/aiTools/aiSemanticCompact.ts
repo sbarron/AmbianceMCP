@@ -193,6 +193,14 @@ Accepts absolute paths or relative paths (when workspace can be detected).
 function extractSimilarityChunks(content: string): any[] {
   const chunks: any[] = [];
 
+  logger.debug('🔍 Extracting similarity chunks from content', {
+    contentLength: content.length,
+    contentPreview: content.substring(0, 200),
+    hasXml: content.includes('<focused_context>'),
+    hasStructured: content.includes('### ') && content.includes('% similar'),
+    hasCompact: content.includes('FOCUSED RESULTS'),
+  });
+
   // Parse XML format (structured output from enhanced compactor)
   if (content.includes('<focused_context>')) {
     const chunkRegex =
@@ -460,94 +468,144 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
         maxChunks: maxSimilarChunks,
       });
 
-      const enhancedResult = await enhancedSemanticCompactor.generateEnhancedContext({
-        projectPath: validatedProjectPath,
-        maxTokens,
-        query,
-        taskType,
-        format: 'structured', // Always use structured for AI processing
-        useEmbeddings: true,
-        embeddingSimilarityThreshold,
-        maxSimilarChunks,
-        generateEmbeddingsIfMissing,
-      });
-
-      // Validate enhanced context before proceeding
       try {
-        logger.info('🔍 Validating enhanced context', {
-          contentLength: enhancedResult.content?.length || 0,
-          contentPreview: enhancedResult.content?.substring(0, 200) || 'empty',
-          hasEmbeddings: enhancedResult.metadata?.embeddingsUsed,
-          similarChunksFound: enhancedResult.metadata?.similarChunksFound,
+        const enhancedResult = await enhancedSemanticCompactor.generateEnhancedContext({
+          projectPath: validatedProjectPath,
+          maxTokens,
+          query,
+          taskType,
+          format: 'structured', // Always use structured for AI processing
+          useEmbeddings: true,
+          embeddingSimilarityThreshold,
+          maxSimilarChunks,
+          generateEmbeddingsIfMissing,
         });
 
-        validateEnhancedContext(enhancedResult.content, enhancedResult.metadata);
-        logger.debug('✅ Enhanced context validation passed', {
-          contentLength: enhancedResult.content?.length || 0,
-          hasEmbeddings: enhancedResult.metadata?.embeddingsUsed,
-        });
-      } catch (validationError) {
-        if (validationError instanceof ValidationError) {
-          logger.warn('🚫 Enhanced context validation failed', {
-            error: validationError.message,
-            code: validationError.structured.code,
-            context: validationError.structured.context,
-            suggestion: validationError.structured.suggestion,
-            contentLength: enhancedResult.content?.length || 0,
-            contentPreview: enhancedResult.content?.substring(0, 100) || 'empty',
-          });
-
-          // Fall back to standard compaction instead of failing
-          logger.info(
-            '🔄 Falling back to standard semantic compaction due to empty enhanced context'
+        // Safety check for enhanced result
+        if (!enhancedResult || !enhancedResult.content) {
+          logger.warn(
+            '⚠️ Enhanced compactor returned empty result, falling back to standard compaction'
           );
           canUseEmbeddings = false;
         } else {
-          throw validationError;
-        }
-      }
+          // Validate enhanced context before proceeding
+          try {
+            logger.info('🔍 Validating enhanced context', {
+              contentLength: enhancedResult.content?.length || 0,
+              contentPreview: enhancedResult.content?.substring(0, 200) || 'empty',
+              hasEmbeddings: enhancedResult.metadata?.embeddingsUsed,
+              similarChunksFound: enhancedResult.metadata?.similarChunksFound,
+              tokenCount: enhancedResult.metadata?.tokenCount,
+            });
 
-      if (canUseEmbeddings) {
-        // Extract individual chunks with their similarity scores from enhanced content
-        const extractedChunks = extractSimilarityChunks(enhancedResult.content);
+            // Skip validation if embeddings were used successfully (we'll validate later after chunk extraction)
+            if (!enhancedResult.metadata?.embeddingsUsed) {
+              validateEnhancedContext(enhancedResult.content, enhancedResult.metadata);
+            } else {
+              logger.debug(
+                '⏭️ Skipping validation for embedding-based context (will validate extracted chunks)'
+              );
+            }
 
-        // Convert enhanced result back to compactedProject format for AI processing
-        compactedProject = {
-          compactedContent: enhancedResult.content,
-          totalTokens: enhancedResult.metadata.tokenCount,
-          compressionRatio: enhancedResult.metadata.compressionRatio,
-          processingStats: {
-            totalFiles: enhancedResult.metadata.totalFiles,
-            filesProcessed: enhancedResult.metadata.includedFiles,
-          },
-          files:
-            extractedChunks.length > 0
-              ? extractedChunks
-              : [
-                  {
-                    // Create a synthetic file entry to satisfy downstream checks
-                    path: 'enhanced_context',
-                    language: 'markdown',
-                    summary: { purpose: 'Enhanced embedding-based context' },
-                    nodes: [],
-                    dependencies: [],
-                    exports: [],
-                  },
-                ],
-        };
-      }
+            logger.debug('✅ Enhanced context validation passed', {
+              contentLength: enhancedResult.content?.length || 0,
+              hasEmbeddings: enhancedResult.metadata?.embeddingsUsed,
+            });
+          } catch (validationError) {
+            if (validationError instanceof ValidationError) {
+              logger.warn('🚫 Enhanced context validation failed', {
+                error: validationError.message,
+                code: validationError.structured.code,
+                context: validationError.structured.context,
+                suggestion: validationError.structured.suggestion,
+                contentLength: enhancedResult.content?.length || 0,
+                contentPreview: enhancedResult.content?.substring(0, 100) || 'empty',
+              });
 
-      embeddingStats = enhancedResult.metadata.embeddingsUsed
-        ? {
-            embeddingsUsed: true,
-            similarChunksFound: enhancedResult.metadata.similarChunksFound,
-            embeddingStats: enhancedResult.metadata.embeddingStats,
+              // Fall back to standard compaction instead of failing
+              logger.info(
+                '🔄 Falling back to standard semantic compaction due to validation failure'
+              );
+              canUseEmbeddings = false;
+            } else {
+              throw validationError;
+            }
           }
-        : null;
-    } else {
-      // Fall back to standard semantic compaction
+
+          if (canUseEmbeddings) {
+            // Extract individual chunks with their similarity scores from enhanced content
+            const extractedChunks = extractSimilarityChunks(enhancedResult.content);
+
+            logger.info('🔍 Chunk extraction results', {
+              contentLength: enhancedResult.content.length,
+              extractedChunksCount: extractedChunks.length,
+              hasEmbeddingsUsed: enhancedResult.metadata?.embeddingsUsed,
+              similarChunksFound: enhancedResult.metadata?.similarChunksFound,
+            });
+
+            // If we have real chunks from embeddings, use them
+            if (extractedChunks.length > 0) {
+              logger.info('✅ Using embedding chunks', {
+                chunksCount: extractedChunks.length,
+                averageConfidence:
+                  extractedChunks.length > 0
+                    ? (
+                        extractedChunks.reduce(
+                          (sum, chunk) => sum + (chunk.summary?.confidence || 0),
+                          0
+                        ) / extractedChunks.length
+                      ).toFixed(3)
+                    : 0,
+              });
+
+              // Convert enhanced result back to compactedProject format for AI processing
+              compactedProject = {
+                compactedContent: enhancedResult.content,
+                totalTokens: enhancedResult.metadata.tokenCount,
+                compressionRatio: enhancedResult.metadata.compressionRatio,
+                processingStats: {
+                  totalFiles: enhancedResult.metadata.totalFiles,
+                  filesProcessed: enhancedResult.metadata.includedFiles,
+                },
+                files: extractedChunks,
+              };
+            } else {
+              // If no chunks were extracted, fall back to standard compaction
+              logger.warn(
+                '⚠️ No embedding chunks extracted, falling back to standard semantic compaction',
+                {
+                  contentLength: enhancedResult.content.length,
+                  contentPreview: enhancedResult.content.substring(0, 200),
+                  embeddingsUsed: enhancedResult.metadata?.embeddingsUsed,
+                }
+              );
+              canUseEmbeddings = false;
+            }
+          }
+
+          embeddingStats =
+            enhancedResult && enhancedResult.metadata && enhancedResult.metadata.embeddingsUsed
+              ? {
+                  embeddingsUsed: true,
+                  similarChunksFound: enhancedResult.metadata.similarChunksFound,
+                  embeddingStats: enhancedResult.metadata.embeddingStats,
+                }
+              : null;
+        }
+      } catch (error) {
+        logger.error('❌ Error during enhanced compaction, falling back to standard compaction', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        canUseEmbeddings = false;
+      }
+    }
+
+    // If we didn't use embeddings or embeddings failed, use standard compaction
+    if (!compactedProject) {
       logger.info('📝 Using standard semantic compaction', {
-        reason: !canUseEmbeddings ? 'Enhanced mode not available or not requested' : '',
+        reason: !canUseEmbeddings
+          ? 'Enhanced mode not available or not requested'
+          : 'Enhanced mode failed',
       });
 
       const compactor = new SemanticCompactor(validatedProjectPath);
@@ -562,6 +620,22 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
     });
 
     // When using enhanced embeddings, we have compacted content without traditional file structure
+    if (!compactedProject) {
+      logger.error('❌ compactedProject is undefined - this should never happen', {
+        canUseEmbeddings,
+        // Note: enhancedResult is only defined inside the try block, so we can't log it here
+      });
+
+      return {
+        success: false,
+        error: 'Internal error: Unable to generate project context',
+        suggestion:
+          'Check server logs for more details. This may be due to missing embeddings or project structure issues.',
+        projectPath: validatedProjectPath,
+        duration: Date.now() - startTime,
+      };
+    }
+
     if (
       !compactedProject.compactedContent &&
       (!compactedProject.files || compactedProject.files.length === 0)
@@ -1007,6 +1081,17 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
     }
 
     const aiAnalysis = aiResponse.choices[0]?.message?.content || 'No analysis generated';
+
+    // Safety check - this should never happen with our improved error handling
+    if (!compactedProject) {
+      logger.error('❌ compactedProject is undefined when creating analysis data');
+      return {
+        success: false,
+        error: 'Internal error: Project context lost during processing',
+        projectPath: validatedProjectPath,
+        duration: Date.now() - startTime,
+      };
+    }
 
     // Create comprehensive analysis data
     const analysisData = {

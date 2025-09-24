@@ -308,16 +308,21 @@ export class ASTParser {
               body: self.extractFunctionBody(func),
             });
           } else if (t.isIdentifier(node.id)) {
-            // Regular variables
-            symbols.push({
-              name: node.id.name,
-              type: 'variable',
-              signature: `${node.id.name}: ${self.inferType(node.init)}`,
-              startLine: node.loc?.start.line || 1,
-              endLine: node.loc?.end.line || 1,
-              docstring: self.extractLeadingComments(path),
-              isExported: self.isExported(path.parentPath),
-            });
+            // Regular variables - only chunk if they're architecturally significant
+            const signature = `${node.id.name}: ${self.inferType(node.init)}`;
+            const docstring = self.extractLeadingComments(path);
+
+            if (self.shouldChunkVariable(node.id.name, signature, docstring)) {
+              symbols.push({
+                name: node.id.name,
+                type: 'variable',
+                signature,
+                startLine: node.loc?.start.line || 1,
+                endLine: node.loc?.end.line || 1,
+                docstring,
+                isExported: self.isExported(path.parentPath),
+              });
+            }
           }
         },
 
@@ -829,5 +834,114 @@ export class ASTParser {
     if (constMatch) return constMatch[1];
 
     return null;
+  }
+
+  /**
+   * Determine if a variable should be chunked based on its characteristics
+   */
+  private shouldChunkVariable(name: string, signature: string, hasDocstring?: string): boolean {
+    const nameLower = name.toLowerCase();
+
+    // Always chunk if documented
+    if (hasDocstring && hasDocstring.length > 20) return true;
+
+    // Always chunk if it's exported or part of a module interface
+    if (
+      signature.includes('export') ||
+      nameLower.includes('config') ||
+      nameLower.includes('setting')
+    ) {
+      return true;
+    }
+
+    // Skip very short/terse variable names (likely locals)
+    if (name.length <= 2) return false;
+
+    // Skip common local variable patterns that add little semantic value
+    const skipPatterns = [
+      'temp',
+      'tmp',
+      'i',
+      'j',
+      'k',
+      'x',
+      'y',
+      'z',
+      'val',
+      'err',
+      'res',
+      'req',
+      'ctx',
+      'data',
+      'result',
+      'response',
+      'item',
+      'element',
+      'count',
+      'len',
+      'length',
+      'index',
+      'status',
+      'message',
+      'output',
+      'input',
+      'value',
+    ];
+
+    if (skipPatterns.some(pattern => nameLower.includes(pattern))) {
+      return false;
+    }
+
+    // Skip variables that are clearly local/temporary
+    if (nameLower.match(/^(get|set|is|has|can|should|will|did)[A-Z]/)) {
+      return false;
+    }
+
+    // Skip variables with numbers at the end (often loop counters)
+    if (nameLower.match(/\d+$/)) return false;
+
+    // If we get here, the variable might be worth chunking
+    // Be more selective - only chunk variables that are clearly architectural
+    const architecturalPatterns = [
+      'config',
+      'setting',
+      'manager',
+      'service',
+      'handler',
+      'helper',
+      'util',
+      'factory',
+      'builder',
+      'parser',
+      'store',
+      'state',
+      'cache',
+      'db',
+      'api',
+      'client',
+    ];
+
+    // Only chunk if it's clearly an architectural pattern AND not a simple local variable
+    const isArchitectural = architecturalPatterns.some(pattern => nameLower.includes(pattern));
+
+    // Additional check: don't chunk if it looks like a simple local variable
+    const simpleLocalPatterns = [
+      'temp',
+      'tmp',
+      'data',
+      'result',
+      'response',
+      'item',
+      'count',
+      'index',
+      'len',
+      'length',
+      'err',
+      'val',
+    ];
+
+    const isSimpleLocal = simpleLocalPatterns.some(pattern => nameLower.includes(pattern));
+
+    return isArchitectural && !isSimpleLocal;
   }
 }

@@ -16,6 +16,8 @@ import {
   WorkspaceValidationOptions,
 } from '../utils/workspaceValidator';
 import { getEmbeddingStatus } from './embeddingManagement';
+import { LocalEmbeddingGenerator } from '../../local/embeddingGenerator';
+import { ProjectIdentifier } from '../../local/projectIdentifier';
 
 async function safeGetEmbeddingStatus(projectPath: string) {
   try {
@@ -35,6 +37,148 @@ async function safeGetEmbeddingStatus(projectPath: string) {
       recommendations: [
         'dY"? Embedding status check failed - AI tools may still work but with reduced performance',
       ],
+    };
+  }
+}
+
+/**
+ * Check if we should proactively generate embeddings after workspace setup
+ */
+async function shouldGenerateEmbeddingsProactively(
+  workspacePath: string,
+  fileCount: number
+): Promise<{
+  shouldGenerate: boolean;
+  reason: string;
+  maxFiles?: number;
+}> {
+  // Check if proactive embedding generation is enabled
+  if (process.env.WORKSPACE_PROACTIVE_EMBEDDINGS !== 'true') {
+    return {
+      shouldGenerate: false,
+      reason: 'Proactive embedding generation disabled (set WORKSPACE_PROACTIVE_EMBEDDINGS=true)',
+    };
+  }
+
+  // Check if local embeddings are enabled
+  if (process.env.USE_LOCAL_EMBEDDINGS !== 'true') {
+    return {
+      shouldGenerate: false,
+      reason: 'Local embeddings not enabled (set USE_LOCAL_EMBEDDINGS=true)',
+    };
+  }
+
+  // Check if embeddings already exist
+  try {
+    const embeddingStatus = await safeGetEmbeddingStatus(workspacePath);
+    if (embeddingStatus.hasEmbeddings && embeddingStatus.totalEmbeddings > 0) {
+      return {
+        shouldGenerate: false,
+        reason: `Embeddings already exist (${embeddingStatus.totalEmbeddings} chunks)`,
+      };
+    }
+  } catch (error) {
+    logger.debug('Could not check existing embeddings, proceeding with generation check');
+  }
+
+  // Check file count limits to avoid long delays
+  const maxFiles = parseInt(process.env.WORKSPACE_EMBEDDING_MAX_FILES || '500', 10);
+  if (fileCount > maxFiles) {
+    return {
+      shouldGenerate: false,
+      reason: `Too many files (${fileCount} > ${maxFiles} limit)`,
+      maxFiles,
+    };
+  }
+
+  // Check if we're in a reasonable project size
+  const minFiles = parseInt(process.env.WORKSPACE_EMBEDDING_MIN_FILES || '10', 10);
+  if (fileCount < minFiles) {
+    return {
+      shouldGenerate: false,
+      reason: `Too few files (${fileCount} < ${minFiles} minimum)`,
+    };
+  }
+
+  return {
+    shouldGenerate: true,
+    reason: `Ready for proactive embedding generation (${fileCount} files)`,
+  };
+}
+
+/**
+ * Proactively generate embeddings for a newly configured workspace
+ */
+async function generateEmbeddingsProactively(
+  workspacePath: string,
+  fileCount: number
+): Promise<{
+  success: boolean;
+  message: string;
+  stats?: any;
+}> {
+  try {
+    logger.info('🚀 Starting proactive embedding generation', {
+      workspacePath,
+      fileCount,
+    });
+
+    // Identify the project
+    const projectIdentifier = ProjectIdentifier.getInstance();
+    const projectInfo = await projectIdentifier.identifyProject(workspacePath);
+
+    if (!projectInfo) {
+      return {
+        success: false,
+        message: 'Could not identify project for embedding generation',
+      };
+    }
+
+    // Initialize embedding generator
+    const embeddingGenerator = new LocalEmbeddingGenerator();
+
+    // Generate embeddings with reasonable limits for proactive generation
+    const progress = await embeddingGenerator.generateProjectEmbeddings(
+      projectInfo.id,
+      workspacePath,
+      {
+        batchSize: 5, // Smaller batches for background processing
+        rateLimit: 500, // Lower rate limit for background processing
+        maxChunkSize: 1000, // Smaller chunks for faster processing
+        filePatterns: [
+          '**/*.{ts,tsx,js,jsx,py,go,rs,java,cpp,c,h,hpp,cs,rb,php,swift,kt,scala,clj,hs,ml,r,sql,sh,bash,zsh,md}',
+        ],
+      }
+    );
+
+    logger.info('✅ Proactive embedding generation completed', {
+      projectId: projectInfo.id,
+      filesProcessed: progress.processedFiles,
+      chunksCreated: progress.totalChunks,
+      embeddings: progress.embeddings,
+      errors: progress.errors.length,
+    });
+
+    return {
+      success: true,
+      message: `Generated ${progress.embeddings} embeddings from ${progress.processedFiles} files`,
+      stats: {
+        filesProcessed: progress.processedFiles,
+        chunksCreated: progress.totalChunks,
+        embeddings: progress.embeddings,
+        errors: progress.errors.length,
+      },
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error('❌ Proactive embedding generation failed', {
+      workspacePath,
+      error: errorMessage,
+    });
+
+    return {
+      success: false,
+      message: `Embedding generation failed: ${errorMessage}`,
     };
   }
 }
@@ -263,20 +407,69 @@ async function handleSetWorkspace(
   process.env.WORKSPACE_INITIALIZED = 'true';
   logger.info('🔧 Workspace initialization flag set');
 
-  // Kick off auto-indexing in the background now that workspace is set
-  try {
-    setTimeout(() => {
-      initializeAutoIndexing().catch(error => {
-        logger.warn('⚠️ Failed to start auto-indexing after workspace setup', {
+  // Check if we should proactively generate embeddings
+  const shouldGenerate = await shouldGenerateEmbeddingsProactively(
+    validation.path!,
+    validation.fileCount || 0
+  );
+  logger.info('📊 Proactive embedding generation check', {
+    shouldGenerate: shouldGenerate.shouldGenerate,
+    reason: shouldGenerate.reason,
+    fileCount: validation.fileCount || 0,
+  });
+
+  const embeddingGenerationResult = null;
+  let embeddingMessage = '';
+
+  if (shouldGenerate.shouldGenerate) {
+    // Start proactive embedding generation in the background
+    setTimeout(async () => {
+      try {
+        const result = await generateEmbeddingsProactively(
+          validation.path!,
+          validation.fileCount || 0
+        );
+        if (result.success) {
+          logger.info('✅ Background embedding generation completed', {
+            workspace: validation.path,
+            message: result.message,
+            stats: result.stats,
+          });
+        } else {
+          logger.warn('⚠️ Background embedding generation failed', {
+            workspace: validation.path,
+            error: result.message,
+          });
+        }
+      } catch (error) {
+        logger.error('❌ Background embedding generation error', {
+          workspace: validation.path,
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+    }, 100); // Small delay to let workspace_config return first
+
+    embeddingMessage =
+      'Starting background embedding generation for optimal AI tool performance...';
+    logger.info('🚀 Triggered proactive embedding generation after workspace setup');
+  } else {
+    // Kick off auto-indexing in the background now that workspace is set
+    try {
+      setTimeout(() => {
+        initializeAutoIndexing().catch(error => {
+          logger.warn('⚠️ Failed to start auto-indexing after workspace setup', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, 0);
+      logger.info('🚀 Triggered automatic indexing after workspace setup');
+    } catch (err) {
+      logger.warn('⚠️ Could not trigger automatic indexing after workspace setup', {
+        error: err instanceof Error ? err.message : String(err),
       });
-    }, 0);
-    logger.info('🚀 Triggered automatic indexing after workspace setup');
-  } catch (err) {
-    logger.warn('⚠️ Could not trigger automatic indexing after workspace setup', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    }
+
+    embeddingMessage = shouldGenerate.reason;
   }
 
   // Check embedding status for the newly set workspace
@@ -314,12 +507,16 @@ async function handleSetWorkspace(
     fileCount: validation.fileCount,
     warnings: validation.warnings,
     embeddingStatus,
+    proactiveEmbeddingGeneration: {
+      triggered: shouldGenerate.shouldGenerate,
+      reason: shouldGenerate.reason,
+      message: embeddingMessage,
+    },
     message:
       `✅ Workspace set successfully: ${validation.path} (${validation.fileCount} files)` +
-      (validation.warnings ? ` [Warnings: ${validation.warnings.length}]` : ''),
-    embeddingMessage: embeddingStatus.hasEmbeddings
-      ? `Embeddings: ${embeddingStatus.totalEmbeddings} chunks, ${embeddingStatus.compatible ? 'compatible' : 'needs migration'}`
-      : 'Embeddings: None found - will be generated automatically on first AI tool use',
+      (validation.warnings ? ` [Warnings: ${validation.warnings.length}]` : '') +
+      (shouldGenerate.shouldGenerate ? ' [Embedding generation started]' : ''),
+    embeddingMessage: embeddingMessage,
   };
 }
 

@@ -56,28 +56,50 @@ Unlike text-based search, this matches syntactical AST node structures.
 - Wildcard variables ($VAR, $FUNC, $ARGS)
 - Precise code location information
 - Fast Rust-based execution
+- Comprehensive pattern validation with helpful error messages
 
 **Pattern Syntax:**
 - Use $ + UPPERCASE for wildcards: $FUNC, $VAR, $ARGS
 - Patterns look like real code: 'function $NAME($ARGS) { $BODY }'
 - Match specific constructs: 'new $CLASS($ARGS)'
-- Not regex: do NOT use '|', '.*', '/regex/', or escapes like '\('\/'\)'.
+- Valid characters: (), {}, [], "", '', numbers, operators, keywords
+- NOT regex: do NOT use '|', '.*', '.+', '/pattern/', or escapes like '\\(' or '\\{'.
+
+**Common Mistakes to Avoid:**
+❌ Don't use: 'function $FUNC' (ambiguous, multiple AST interpretations)
+❌ Don't use: 'export $TYPE' (ambiguous, multiple AST interpretations)
+❌ Don't use: '$NAME' (too generic, matches everything)
+❌ Don't use: /pattern/ (regex syntax not supported)
+
+**✅ Good Patterns:**
+- 'function $NAME($ARGS) { $BODY }' (complete function structure)
+- 'export const $NAME = $VALUE' (exported constant)
+- 'import $NAME from "$MODULE"' (import statement)
+- 'new $CLASS($ARGS)' (constructor call)
+- 'await $PROMISE' inside 'for ($COND) { $BODY }' (relational patterns)
 
 **Examples:**
-- Find function calls: '$FUNC($ARGS)'
+- Find all functions: 'function $NAME($ARGS) { $BODY }'
+- Find all exports: 'export const $NAME = $VALUE'
+- Find imports: 'import $NAME from "$MODULE"'
 - Find class instantiation: 'new $CLASS($ARGS)'
-- Find variable assignments: 'const $VAR = $VALUE'
 - Find method calls: '$OBJ.$METHOD($ARGS)'
-- Find Express usage (run separately):
-  - 'import $NAME from "express"'
-  - 'const $NAME = require("express")'
-  - 'express()'
+- Find async functions: 'async function $NAME($ARGS) { $BODY }'
+- Find arrow functions: 'const $NAME = ($ARGS) => $BODY'
+- Find React components: 'export function $NAME($PROPS) { return $JSX }'
+
+**Advanced Usage:**
+- Use $$$ for zero or more arguments: 'console.log($$$ARGS)'
+- Use relational rules: 'await $PROMISE' inside 'for ($COND) { $BODY }'
+- Use multiple searches for OR conditions (alternation not supported)
 
 **Use Cases:**
 - Code refactoring and migration
 - Finding specific patterns across codebase
 - Security auditing for dangerous patterns
 - Architecture analysis and dependency tracking
+- Finding unused imports or exports
+- API usage analysis
 
 **Automatic Exclusions:**
 By default, excludes common non-source directories:
@@ -159,6 +181,161 @@ By default, excludes common non-source directories:
   },
 };
 
+// Comprehensive pattern validation for ast-grep
+interface PatternValidationResult {
+  isValid: boolean;
+  error?: string;
+  suggestions?: string[];
+  warning?: string;
+}
+
+export function validateAstGrepPattern(pattern: string): PatternValidationResult {
+  const trimmedPattern = pattern.trim();
+
+  // Empty pattern check
+  if (!trimmedPattern) {
+    return {
+      isValid: false,
+      error:
+        'Pattern cannot be empty. Use valid TypeScript/JavaScript syntax like "function $NAME($ARGS) { $BODY }"',
+      suggestions: [
+        'function $NAME($ARGS) { $BODY }',
+        'import $NAME from "$MODULE"',
+        'new $CLASS($ARGS)',
+        'const $VAR = $VALUE',
+      ],
+    };
+  }
+
+  // Regex literal syntax check (/pattern/flags)
+  if (/^\s*\/.+\/[gimsuy]*\s*$/i.test(trimmedPattern)) {
+    return {
+      isValid: false,
+      error: 'Regex literal syntax (/pattern/flags) is not supported in AST patterns',
+      suggestions: [
+        'Use structural patterns instead of regex',
+        'For multiple patterns, run separate searches',
+        'Example: "import $NAME from \\"express\\"" instead of /import.*express/',
+      ],
+    };
+  }
+
+  // Alternation operator check
+  if (trimmedPattern.includes('|')) {
+    return {
+      isValid: false,
+      error: 'Alternation operator (|) is not supported in basic AST patterns',
+      suggestions: [
+        'Run separate searches for each pattern instead',
+        'Example: search "import $NAME from \\"express\\"" and "const $NAME = require(\\"express\\")" separately',
+      ],
+    };
+  }
+
+  // Regex wildcards check
+  if (
+    trimmedPattern.includes('.*') ||
+    trimmedPattern.includes('.+') ||
+    trimmedPattern.includes('.*')
+  ) {
+    return {
+      isValid: false,
+      error: 'Regex wildcards (.*, .+, etc.) are not supported in AST patterns',
+      suggestions: [
+        'Use structural wildcards like $NAME, $ARGS instead',
+        'Example: "function $NAME($ARGS) { $BODY }" matches any function',
+      ],
+    };
+  }
+
+  // Regex escape sequences check
+  if (/\\([(){}\[\].+?^$])/g.test(trimmedPattern)) {
+    return {
+      isValid: false,
+      error: 'Regex escape sequences (\\(escaped chars\\)) are not needed in AST patterns',
+      suggestions: [
+        'Remove backslashes - AST patterns use structural matching, not text matching',
+        'Example: "function $NAME($ARGS)" instead of "function \\$NAME(\\$ARGS)"',
+      ],
+    };
+  }
+
+  // Regex groups/lookahead check
+  if (trimmedPattern.includes('(?') || trimmedPattern.includes('?:')) {
+    return {
+      isValid: false,
+      error: 'Regex groups and lookahead are not supported in AST patterns',
+      suggestions: [
+        'Use structural patterns with multiple searches instead',
+        'Example: search "await $PROMISE" inside "for ($COND) { $BODY }"',
+      ],
+    };
+  }
+
+  // Check for ambiguous patterns that ast-grep can't parse
+  const ambiguousPatterns = [
+    /^export\s+\$[A-Z_]+$/,
+    /^import\s+\$[A-Z_]+$/,
+    /^function\s+\$[A-Z_]+$/,
+    /^\$[A-Z_]+\s*$/,
+    /^export\s+default\s+\$[A-Z_]+$/,
+  ];
+
+  for (const ambiguousPattern of ambiguousPatterns) {
+    if (ambiguousPattern.test(trimmedPattern)) {
+      return {
+        isValid: false,
+        error: `Pattern "${trimmedPattern}" is ambiguous and cannot be parsed by ast-grep`,
+        suggestions: [
+          'Add more context to make the pattern unambiguous',
+          'Example: "export const $NAME = $VALUE" instead of "export $TYPE"',
+          'Example: "function $NAME($ARGS) { $BODY }" instead of "function $FUNC"',
+        ],
+      };
+    }
+  }
+
+  // Check for patterns that are too generic and likely won't match anything useful
+  const tooGenericPatterns = [
+    /^\$[A-Z_]+$/,
+    /^export\s+\$[A-Z_]+$/,
+    /^import\s+\$[A-Z_]+$/,
+    /^function\s+\$[A-Z_]+$/,
+  ];
+
+  let warning: string | undefined;
+  for (const genericPattern of tooGenericPatterns) {
+    if (genericPattern.test(trimmedPattern)) {
+      warning = `Pattern "${trimmedPattern}" is very generic and may not match expected code structures`;
+      break;
+    }
+  }
+
+  // Check for patterns missing metavariables when they should have them
+  const patternsNeedingMetavariables = [
+    {
+      regex: /^export\s+(const|let|var|function|class|interface|type)\s+[^$]/,
+      suggestion: 'Use metavariables like $NAME for the exported identifier',
+    },
+    { regex: /^function\s+[^$]/, suggestion: 'Use $NAME for the function name' },
+    { regex: /^class\s+[^$]/, suggestion: 'Use $NAME for the class name' },
+    { regex: /^import\s+[^$]/, suggestion: 'Use $NAME for the imported identifier' },
+  ];
+
+  const suggestions: string[] = [];
+  for (const patternCheck of patternsNeedingMetavariables) {
+    if (patternCheck.regex.test(trimmedPattern)) {
+      suggestions.push(patternCheck.suggestion);
+    }
+  }
+
+  return {
+    isValid: true,
+    suggestions: suggestions.length > 0 ? suggestions : undefined,
+    warning,
+  };
+}
+
 /**
  * Handle ast-grep search requests
  */
@@ -166,17 +343,36 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
   const startTime = Date.now();
 
   try {
-    // Early validation: discourage regex-like inputs that will fail or be handled by the shell on Windows
+    // Early validation: comprehensive pattern validation
     if (typeof args.pattern !== 'string' || !args.pattern.trim()) {
       throw new Error('Pattern must be a non-empty string containing an AST pattern (not regex).');
     }
 
     const pattern = String(args.pattern);
-    const regexLikeReason = looksLikeRegexPattern(pattern);
-    if (regexLikeReason) {
-      throw new Error(
-        `Pattern appears to be a regular expression (${regexLikeReason}). ast-grep expects a structural code pattern. Examples: "$FUNC($ARGS)", "new $CLASS($ARGS)", "import $NAME from \"express\"". For OR conditions, run multiple searches.`
-      );
+    const validation = validateAstGrepPattern(pattern);
+
+    if (!validation.isValid) {
+      const errorMessage = validation.error || 'Invalid AST pattern';
+      const suggestions = validation.suggestions || [];
+      const fullMessage = `${errorMessage}${suggestions.length > 0 ? '\n\nSuggestions:\n' + suggestions.map(s => `• ${s}`).join('\n') : ''}`;
+      throw new Error(fullMessage);
+    }
+
+    // Log warnings for potentially problematic patterns
+    if (validation.warning) {
+      logger.warn('⚠️ Potentially problematic AST pattern', {
+        pattern,
+        warning: validation.warning,
+        suggestions: validation.suggestions,
+      });
+    }
+
+    // Log suggestions for improvement
+    if (validation.suggestions && validation.suggestions.length > 0) {
+      logger.info('💡 Pattern suggestions available', {
+        pattern,
+        suggestions: validation.suggestions,
+      });
     }
 
     logger.info('🔍 Executing ast-grep search', {
@@ -249,145 +445,228 @@ export async function executeAstGrep(options: {
   contextLines: number;
   respectGitignore?: boolean;
   excludePatterns?: string[];
-}): Promise<{ matches: AstGrepMatch[]; totalMatches: number }> {
+}): Promise<AstGrepResult> {
   return new Promise((resolve, reject) => {
-    // Build command arguments - note that 'run' is the default command, so we can omit it
+    const startTime = Date.now();
     const cliArgs: string[] = [];
 
-    // Add pattern
-    cliArgs.push('--pattern', options.pattern);
-
-    // Add language if specified
-    if (options.language) {
-      cliArgs.push('--lang', options.language);
-    }
-
-    // Add JSON output - use 'stream' for line-by-line parsing
-    cliArgs.push('--json=stream');
-
-    // Add context if requested
-    if (options.includeContext && options.contextLines > 0) {
-      cliArgs.push('--context', options.contextLines.toString());
-    }
-
-    // Handle ignore patterns
-    if (options.respectGitignore === false) {
-      // Disable gitignore respect if explicitly requested
-      cliArgs.push('--no-ignore', 'vcs');
-    }
-
-    // Add the search path - always search current directory when cwd is set to projectPath
-    if (options.filePattern) {
-      // Use relative path since we set cwd to projectPath
-      cliArgs.push(options.filePattern);
-    } else {
-      // Search current directory (which will be projectPath due to cwd)
-      cliArgs.push('.');
-    }
-
-    logger.debug('Executing ast-grep command', {
-      command: 'npx ast-grep',
-      args: cliArgs.join(' '),
-      cwd: options.projectPath,
-    });
-
-    let astGrep: ReturnType<typeof spawn>;
     try {
-      // Prefer locally installed ast-grep binary if present
-      const localBin = findLocalAstGrepBinary();
-      if (localBin) {
-        astGrep = spawn(localBin, [...cliArgs], {
-          cwd: options.projectPath,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          shell: false,
-        });
+      cliArgs.push('--pattern', options.pattern);
+
+      if (options.language) {
+        cliArgs.push('--lang', options.language);
+      }
+
+      cliArgs.push('--json=stream');
+
+      if (options.includeContext && options.contextLines > 0) {
+        cliArgs.push('--context', options.contextLines.toString());
+      }
+
+      if (options.respectGitignore === false) {
+        cliArgs.push('--no-ignore', 'vcs');
+      }
+
+      if (options.filePattern) {
+        cliArgs.push(options.filePattern);
       } else {
-        // Fallback to npx without shell
-        const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-        astGrep = spawn(npxCmd, ['ast-grep', ...cliArgs], {
-          cwd: options.projectPath,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          shell: false,
-        });
+        cliArgs.push('.');
       }
-    } catch (spawnError) {
-      // Last-resort fallback: run via shell command string (with safe quoting)
-      const fullCommand = buildShellCommand('npx ast-grep', cliArgs);
-      logger.warn('Falling back to shell execution for ast-grep due to spawn error', {
-        error: spawnError instanceof Error ? spawnError.message : String(spawnError),
-        fullCommand,
-      });
-      astGrep = spawn(fullCommand, [], {
+
+      logger.debug('Executing ast-grep command', {
+        command: 'npx ast-grep',
+        args: cliArgs.join(' '),
         cwd: options.projectPath,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: true,
-      });
-    }
-
-    let stdout = '';
-    let stderr = '';
-
-    if (astGrep.stdout) {
-      astGrep.stdout.on('data', data => {
-        stdout += data.toString();
-      });
-    }
-
-    if (astGrep.stderr) {
-      astGrep.stderr.on('data', data => {
-        stderr += data.toString();
-      });
-    }
-
-    astGrep.on('close', code => {
-      logger.debug('ast-grep process closed', {
-        code,
-        stdoutLength: stdout.length,
-        stderrLength: stderr.length,
-        stderr: stderr.substring(0, 500), // First 500 chars of stderr for debugging
       });
 
-      if (code !== 0 && code !== null) {
-        reject(new Error(`ast-grep exited with code ${code}: ${stderr}`));
-        return;
+      let astGrep: ReturnType<typeof spawn> | null = null;
+      let executionMethod = 'unknown';
+
+      const localBinary = findLocalAstGrepBinary();
+      if (localBinary) {
+        try {
+          const useShell = process.platform === 'win32' && localBinary.endsWith('.cmd');
+          astGrep = spawn(localBinary, cliArgs, {
+            cwd: options.projectPath,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: useShell,
+          });
+          executionMethod = 'local-binary';
+          logger.debug('Using local ast-grep binary', { binary: localBinary, useShell });
+        } catch (localBinaryError) {
+          logger.debug('Failed to spawn local binary, falling back to npx', {
+            error:
+              localBinaryError instanceof Error
+                ? localBinaryError.message
+                : String(localBinaryError),
+          });
+        }
       }
 
-      try {
-        // Parse JSON output
-        let matches = parseAstGrepOutput(stdout, options.maxMatches);
+      if (!astGrep) {
+        const approaches = [
+          {
+            name: 'cmd-npx',
+            command: 'cmd',
+            args: ['/c', 'npx', 'ast-grep', ...cliArgs],
+            options: { shell: false },
+          },
+          {
+            name: 'powershell-npx',
+            command: 'powershell',
+            args: ['-Command', 'npx ast-grep ' + cliArgs.join(' ')],
+            options: { shell: false },
+          },
+          {
+            name: 'shell-cmd-npx',
+            command: 'cmd /c "npx ast-grep ' + cliArgs.join(' ') + '"',
+            args: [],
+            options: { shell: true },
+          },
+        ] as const;
 
-        // Apply additional exclude patterns if specified
-        if (options.excludePatterns && options.excludePatterns.length > 0) {
-          matches = filterMatchesByExcludePatterns(
-            matches,
-            options.excludePatterns,
-            options.projectPath
-          );
+        let lastError: Error | null = null;
+
+        for (const approach of approaches) {
+          try {
+            logger.debug('Attempting spawn approach', {
+              approach: approach.name,
+              command: approach.command,
+              args: approach.args,
+              cwd: options.projectPath,
+              platform: process.platform,
+              shell: approach.options.shell,
+              fullCommand:
+                approach.command + ' ' + (approach.args.length > 0 ? approach.args.join(' ') : ''),
+            });
+
+            astGrep = spawn(approach.command, approach.args, {
+              cwd: options.projectPath,
+              stdio: ['ignore', 'pipe', 'pipe'],
+              ...approach.options,
+              env: process.env,
+            });
+
+            executionMethod = approach.name;
+            logger.debug('Spawn succeeded', { approach: approach.name });
+            break;
+          } catch (approachError) {
+            lastError =
+              approachError instanceof Error ? approachError : new Error(String(approachError));
+            logger.debug('Spawn approach failed', {
+              approach: approach.name,
+              error: lastError.message,
+              code: (lastError as any).code,
+              shell: approach.options.shell,
+            });
+          }
         }
 
-        resolve(matches);
-      } catch (error) {
+        if (!astGrep) {
+          logger.error('All spawn approaches failed', {
+            approaches: approaches.map(a => a.name),
+            lastError: lastError?.message,
+            cwd: options.projectPath,
+            nodeVersion: process.version,
+          });
+          throw new Error(`All spawn approaches failed: ${lastError?.message || 'Unknown error'}`);
+        }
+      }
+
+      if (!astGrep) {
+        throw new Error('Failed to spawn ast-grep: no process handle available.');
+      }
+
+      let stdout = '';
+      let stderr = '';
+
+      astGrep.stdout?.on('data', data => {
+        stdout += data.toString();
+      });
+
+      astGrep.stderr?.on('data', data => {
+        stderr += data.toString();
+      });
+
+      astGrep.on('close', code => {
+        logger.info('ast-grep process closed', {
+          code,
+          stdoutLength: stdout.length,
+          stderrLength: stderr.length,
+          executionMethod,
+          success: code === 0,
+          stderr: stderr.substring(0, 500),
+        });
+
+        if (code !== 0 && code !== null) {
+          reject(new Error(`ast-grep exited with code ${code}: ${stderr}`));
+          return;
+        }
+
+        try {
+          let matches = parseAstGrepOutput(stdout, options.maxMatches);
+
+          if (options.excludePatterns && options.excludePatterns.length > 0) {
+            matches = filterMatchesByExcludePatterns(
+              matches,
+              options.excludePatterns,
+              options.projectPath
+            );
+          }
+
+          resolve({
+            ...matches,
+            executionTime: Date.now() - startTime,
+            pattern: options.pattern,
+            language: options.language,
+          });
+        } catch (parseError) {
+          reject(
+            new Error(
+              `Failed to parse ast-grep output: ${
+                parseError instanceof Error ? parseError.message : String(parseError)
+              }`
+            )
+          );
+        }
+      });
+
+      astGrep.on('error', processError => {
+        logger.error('ast-grep process error', {
+          error: processError.message,
+          code: (processError as any).code,
+          stack: processError.stack?.substring(0, 300),
+          executionMethod,
+          cwd: options.projectPath,
+          platform: process.platform,
+          nodeVersion: process.version,
+          path: process.env.PATH?.substring(0, 200),
+        });
         reject(
           new Error(
-            `Failed to parse ast-grep output: ${error instanceof Error ? error.message : String(error)}`
+            `Failed to spawn ast-grep (${executionMethod}): ${processError.message} (code: ${(processError as any).code}). Make sure @ast-grep/cli is installed and accessible.`
           )
         );
-      }
-    });
+      });
 
-    astGrep.on('error', error => {
+      setTimeout(() => {
+        if (astGrep) {
+          astGrep.kill();
+        }
+        reject(new Error('ast-grep search timed out after 30 seconds'));
+      }, 30000);
+    } catch (error) {
+      logger.error('Failed to execute ast-grep', {
+        error: error instanceof Error ? error.message : String(error),
+        cwd: options.projectPath,
+        platform: process.platform,
+      });
       reject(
         new Error(
-          `Failed to spawn ast-grep: ${error.message}. Make sure @ast-grep/cli is installed.`
+          `Failed to execute ast-grep: ${error instanceof Error ? error.message : String(error)}`
         )
       );
-    });
-
-    // Set timeout for long-running searches
-    setTimeout(() => {
-      astGrep.kill();
-      reject(new Error('ast-grep search timed out after 30 seconds'));
-    }, 30000);
+    }
   });
 }
 
@@ -454,9 +733,6 @@ function parseAstGrepOutput(
 }
 
 /**
- * Check if ast-grep is available in the system
- */
-/**
  * Filter matches by additional exclude patterns
  */
 function filterMatchesByExcludePatterns(
@@ -465,12 +741,9 @@ function filterMatchesByExcludePatterns(
   projectPath: string
 ): { matches: AstGrepMatch[]; totalMatches: number } {
   const filteredMatches = matches.matches.filter(match => {
-    // Convert absolute path to relative for pattern matching
     const relativePath = path.relative(projectPath, match.file).replace(/\\/g, '/');
 
-    // Check if file matches any exclude pattern
     return !excludePatterns.some(pattern => {
-      // Simple glob pattern matching
       const regex = pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*').replace(/\?/g, '.');
       return new RegExp(`^${regex}$`).test(relativePath);
     });
@@ -507,8 +780,51 @@ function getDefaultExcludePatterns(): string[] {
 
 export async function isAstGrepAvailable(): Promise<boolean> {
   return new Promise(resolve => {
-    const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-    const astGrep = spawn(npxCmd, ['ast-grep', '--version'], {
+    // First, try to use the local binary if available
+    const localBinary = findLocalAstGrepBinary();
+    if (localBinary) {
+      // For Windows .cmd files, we need to use shell execution
+      const useShell = process.platform === 'win32' && localBinary.endsWith('.cmd');
+      const astGrep = spawn(localBinary, ['--version'], {
+        stdio: 'ignore',
+        shell: useShell,
+      });
+
+      astGrep.on('close', code => {
+        resolve(code === 0);
+      });
+
+      astGrep.on('error', () => {
+        // If local binary fails, try npx fallback
+        const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+        const fallbackAstGrep = spawn(npxCmd, ['ast-grep', '--version'], {
+          stdio: 'ignore',
+          shell: false,
+        });
+
+        fallbackAstGrep.on('close', code => {
+          resolve(code === 0);
+        });
+
+        fallbackAstGrep.on('error', () => {
+          resolve(false);
+        });
+
+        setTimeout(() => {
+          fallbackAstGrep.kill();
+          resolve(false);
+        }, 5000);
+      });
+
+      setTimeout(() => {
+        astGrep.kill();
+        resolve(false);
+      }, 5000);
+      return;
+    }
+
+    // If no local binary, use cmd /c npx approach (consistent with main execution)
+    const astGrep = spawn('cmd', ['/c', 'npx', 'ast-grep', '--version'], {
       stdio: 'ignore',
       shell: false,
     });
@@ -532,14 +848,33 @@ export async function isAstGrepAvailable(): Promise<boolean> {
 // Try to find a locally installed ast-grep binary in node_modules/.bin
 function findLocalAstGrepBinary(): string | null {
   try {
-    const binDir = path.join(process.cwd(), 'node_modules', '.bin');
-    const exe = process.platform === 'win32' ? 'ast-grep.cmd' : 'ast-grep';
-    const full = path.join(binDir, exe);
-    if (require('fs').existsSync(full)) {
-      return full;
+    // Check multiple possible locations for the binary
+    const possibleLocations = [
+      path.join(process.cwd(), 'node_modules', '.bin'),
+      path.join(__dirname, '..', '..', '..', 'node_modules', '.bin'),
+      path.join(__dirname, '..', '..', 'node_modules', '.bin'),
+    ];
+
+    // Try different extensions based on platform
+    const extensions = process.platform === 'win32' ? ['.cmd', '.ps1', ''] : [''];
+
+    for (const binDir of possibleLocations) {
+      for (const ext of extensions) {
+        const exe = `ast-grep${ext}`;
+        const full = path.join(binDir, exe);
+        if (require('fs').existsSync(full)) {
+          logger.debug('Found local ast-grep binary', { path: full });
+          return full;
+        }
+      }
     }
+
+    logger.debug('No local ast-grep binary found');
     return null;
-  } catch {
+  } catch (error) {
+    logger.debug('Error finding local ast-grep binary', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
@@ -555,12 +890,4 @@ function buildShellCommand(cmd: string, args: string[]): string {
     return `'${s.replace(/'/g, "'\\''")}'`;
   };
   return `${cmd} ${args.map(a => (a.startsWith('--') ? a : quote(a))).join(' ')}`.trim();
-}
-// Heuristic to detect regex-like patterns that will not work with ast-grep structural matching
-function looksLikeRegexPattern(pattern: string): string | null {
-  if (/^\s*\/.+\/[gimsuy]*\s*$/.test(pattern)) return 'regex literal (/.../)';
-  if (pattern.includes('|')) return 'alternation (|)';
-  if (pattern.includes('.*')) return 'wildcard (.*)';
-  if (/\\[(){}\[\].+?^$]/.test(pattern)) return 'escaped regex metacharacters';
-  return null;
 }

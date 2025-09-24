@@ -77,6 +77,12 @@ class AmbianceMCPServer {
     // Apply fallback environment variables if not set (for when mcp.json env vars aren't passed through)
     this.applyFallbackEnvironmentVariables();
 
+    // Force enable local embeddings if we have any embeddings tools
+    if (!process.env.USE_LOCAL_EMBEDDINGS) {
+      process.env.USE_LOCAL_EMBEDDINGS = 'true';
+      logger.info('🔧 Forcing USE_LOCAL_EMBEDDINGS=true for embedding functionality');
+    }
+
     // Debug: Log the current state of key environment variables
     logger.info('🔧 Environment state after fallbacks', {
       USE_LOCAL_EMBEDDINGS: process.env.USE_LOCAL_EMBEDDINGS || 'undefined',
@@ -167,8 +173,8 @@ class AmbianceMCPServer {
       USE_LOCAL_EMBEDDINGS: 'true',
       LOCAL_EMBEDDING_MODEL: 'all-MiniLM-L6-v2',
       OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-      OPENAI_BASE_MODEL: 'gpt-4.1',
-      OPENAI_MINI_MODEL: 'gpt-4.1-mini',
+      OPENAI_BASE_MODEL: 'gpt-4o',
+      OPENAI_MINI_MODEL: 'gpt-4o-mini',
       OPENAI_EMBEDDINGS_MODEL: 'text-embedding-3-small',
     };
 

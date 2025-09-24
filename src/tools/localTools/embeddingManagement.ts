@@ -19,6 +19,7 @@ import {
   getProjectEmbeddingDetails,
 } from './projectManagement';
 import * as crypto from 'crypto';
+import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding } from '../../local/quantization';
 
 export type ManageEmbeddingsAction =
   | 'status'
@@ -583,20 +584,30 @@ export async function validateProjectEmbeddings(args: {
       const integrityIssues: string[] = [];
 
       for (const embedding of sample) {
-        if (!Array.isArray(embedding.embedding) || embedding.embedding.length === 0) {
+        let embeddingVector: number[];
+        let embeddingLength: number;
+
+        // Handle both quantized and float32 embeddings
+        if (isQuantized(embedding.embedding)) {
+          embeddingVector = dequantizeInt8ToFloat32(embedding.embedding);
+          embeddingLength = embedding.embedding.originalDimensions;
+        } else {
+          embeddingVector = embedding.embedding;
+          embeddingLength = embedding.embedding.length;
+        }
+
+        if (!embeddingVector || embeddingVector.length === 0) {
           integrityIssues.push(`Embedding ${embedding.id} has invalid vector data.`);
         }
 
-        const hasInvalidValues = embedding.embedding.some(
-          (value: number) => !Number.isFinite(value)
-        );
+        const hasInvalidValues = embeddingVector.some((value: number) => !Number.isFinite(value));
         if (hasInvalidValues) {
           integrityIssues.push(`Embedding ${embedding.id} contains NaN or infinite values.`);
         }
 
-        if (embedding.metadata.embeddingDimensions !== embedding.embedding.length) {
+        if (embedding.metadata.embeddingDimensions !== embeddingLength) {
           integrityIssues.push(
-            `Embedding ${embedding.id} has dimension mismatch: metadata ${embedding.metadata.embeddingDimensions}, actual ${embedding.embedding.length}.`
+            `Embedding ${embedding.id} has dimension mismatch: metadata ${embedding.metadata.embeddingDimensions}, actual ${embeddingLength}.`
           );
         }
       }
@@ -652,34 +663,7 @@ async function getCurrentModelConfiguration(): Promise<{
   dimensions: number;
   format: 'int8' | 'float32';
 }> {
-  if (process.env.AMBIANCE_API_KEY) {
-    return {
-      provider: 'voyageai',
-      model: 'voyage-context-3',
-      dimensions: 1024,
-      format: 'int8',
-    };
-  }
-
-  if (process.env.OPENAI_API_KEY) {
-    const currentModel = process.env.OPENAI_EMBEDDINGS_MODEL || 'text-embedding-3-large';
-    const modelDimensions =
-      currentModel === 'text-embedding-3-large'
-        ? 3072
-        : currentModel === 'text-embedding-3-small'
-          ? 1536
-          : currentModel === 'text-embedding-ada-002'
-            ? 1536
-            : 3072;
-
-    return {
-      provider: 'openai',
-      model: currentModel,
-      dimensions: modelDimensions,
-      format: 'float32',
-    };
-  }
-
+  // Default to local opensource models (transformers.js)
   try {
     const { getDefaultLocalProvider } = await import('../../local/localEmbeddingProvider');
     const localProvider = getDefaultLocalProvider();
@@ -699,4 +683,37 @@ async function getCurrentModelConfiguration(): Promise<{
       format: 'float32',
     };
   }
+
+  // Use OpenAI only if explicitly enabled and key is available
+  if (process.env.OPENAI_API_KEY && process.env.USE_OPENAI_EMBEDDINGS === 'true') {
+    const currentModel = process.env.OPENAI_EMBEDDINGS_MODEL || 'text-embedding-3-large';
+    const modelDimensions =
+      currentModel === 'text-embedding-3-large'
+        ? 3072
+        : currentModel === 'text-embedding-3-small'
+          ? 1536
+          : currentModel === 'text-embedding-ada-002'
+            ? 1536
+            : 3072;
+
+    return {
+      provider: 'openai',
+      model: currentModel,
+      dimensions: modelDimensions,
+      format: 'float32',
+    };
+  }
+
+  // VoyageAI is not supported - removed to prevent confusion
+  // Legacy VoyageAI support removed as the service is no longer available
+
+  // Fallback to local if no other providers are explicitly enabled
+  return {
+    provider: 'local',
+    model: 'transformers.js',
+    dimensions: 384,
+    format: 'float32',
+  };
 }
+
+export { getCurrentModelConfiguration };

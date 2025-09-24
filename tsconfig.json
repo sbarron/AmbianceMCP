@@ -17,15 +17,13 @@
   },
   "include": [
     "src/index.ts",
-    "src/cli.ts",
     "src/tools/**/*.ts",
     "src/compactor/**/*.ts",
     "src/client/apiClient.ts",
     "src/local/**/*.ts",
     "src/utils/**/*.ts",
     "src/core/**/*.ts",
-    "tools/**/*.ts",
-    "scripts/**/*.ts"
+    "tools/**/*.ts"
   ],
   "exclude": [
     "node_modules",

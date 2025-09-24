@@ -8,11 +8,11 @@
  *   - updateProjectEmbeddings(): Incremental embedding updates
  * @dependencies:
  *   - apiClient: Ambiance API client for embedding generation
- *   - openai: OpenAI API for fallback when Ambiance API unavailable
+ *   - openai: OpenAI API when explicitly enabled
  *   - localEmbeddingProvider: Local Transformers.js models (offline fallback)
  *   - embeddingStorage: Local SQLite storage for persistence
  *   - treeSitterProcessor: AST-based chunking and symbol extraction
- * @context: Provides intelligent embedding generation with provider fallback: Ambiance API → OpenAI → Local Model → No Embeddings
+ * @context: Provides intelligent embedding generation with explicit provider selection: Local Models → OpenAI (explicit) → VoyageAI (explicit) → Error
  */
 
 import * as fs from 'fs';
@@ -111,27 +111,33 @@ export class LocalEmbeddingGenerator {
   private static readonly MAX_RATE_LIMIT_HITS = 3;
 
   constructor(storage?: LocalEmbeddingStorage) {
-    this.storage = storage || new LocalEmbeddingStorage();
+    // Use provided storage or create with quantization enabled
+    this.storage = storage || new LocalEmbeddingStorage(undefined, true);
     this.embeddingModel = process.env.OPENAI_EMBEDDINGS_MODEL || 'text-embedding-3-large';
     this.ambianceApiKey = process.env.AMBIANCE_API_KEY;
 
-    // Initialize providers in priority order: Ambiance API → OpenAI → Local
-    if (this.ambianceApiKey) {
-      logger.info('🚀 Embedding generator initialized with Ambiance API', {
-        hasApiKey: true,
-        model: 'voyage-context-3', // Handled by server
+    // Initialize providers based on explicit user preferences
+    const openaiEnabled = process.env.USE_OPENAI_EMBEDDINGS === 'true';
+    const voyageAIEnabled = false; // VoyageAI is no longer supported
+
+    // Initialize OpenAI client if explicitly enabled and API key is available
+    if (openaiEnabled && openaiService.isReady()) {
+      this.openai = openaiService.getClient();
+      logger.info('🤖 Embedding generator initialized with OpenAI (explicitly enabled)', {
+        model: this.embeddingModel,
       });
     }
 
-    // Initialize OpenAI client if API key is available (fallback)
-    if (openaiService.isReady()) {
-      this.openai = openaiService.getClient();
-      logger.info('🤖 Embedding generator initialized with OpenAI fallback', {
-        model: this.embeddingModel,
+    // Initialize Ambiance API client if explicitly enabled and API key is available
+    if (voyageAIEnabled && this.ambianceApiKey) {
+      logger.info('🚀 Embedding generator initialized with VoyageAI (explicitly enabled)', {
+        hasApiKey: true,
+        model: process.env.VOYAGEAI_MODEL || 'voyageai-model', // Handled by server
       });
-    } else if (!this.ambianceApiKey) {
-      logger.warn('⚠️ Neither Ambiance API nor OpenAI API key found - using local fallback only');
     }
+
+    // Local embeddings are always available as default fallback
+    logger.info('✅ Local embedding provider (transformers.js) available as default');
 
     // Initialize TreeSitter for intelligent chunking
     try {
@@ -250,7 +256,7 @@ export class LocalEmbeddingGenerator {
   private getExpectedDimensions(providerName: string): number {
     switch (providerName) {
       case 'voyageai':
-        return 1024; // voyage-context-3
+        return 1024; // VoyageAI model dimensions
       case 'openai':
         return this.embeddingModel === 'text-embedding-3-large'
           ? 3072
@@ -583,7 +589,31 @@ export class LocalEmbeddingGenerator {
         model: this.embeddingModel,
         input: texts,
       });
-      return response.data.map((item: any) => item.embedding);
+
+      // Validate response
+      if (!response || !response.data || !Array.isArray(response.data)) {
+        throw new Error('Invalid OpenAI response: missing or invalid data array');
+      }
+
+      if (response.data.length === 0) {
+        throw new Error('Invalid OpenAI response: empty data array');
+      }
+
+      const firstItem = response.data[0];
+      if (!firstItem || !firstItem.embedding || !Array.isArray(firstItem.embedding)) {
+        throw new Error(
+          'Invalid OpenAI response: first item missing embedding or embedding is not an array'
+        );
+      }
+
+      return response.data.map((item: any) => {
+        if (!item || !item.embedding || !Array.isArray(item.embedding)) {
+          throw new Error(
+            'Invalid OpenAI response: item missing embedding or embedding is not an array'
+          );
+        }
+        return item.embedding;
+      });
     } catch (error: any) {
       const isRateLimit = error?.status === 429 || error?.message?.includes('Rate limit');
       const isServerError = error?.status >= 500;
@@ -725,7 +755,7 @@ export class LocalEmbeddingGenerator {
 
   /**
    * Generate embeddings for a batch of text chunks with provider fallback
-   * Priority: Ambiance API → OpenAI → Local Model → Error
+   * Priority: Local Models → OpenAI (explicit) → VoyageAI (explicit) → Error
    */
   private async generateBatchEmbeddings(texts: string[]): Promise<number[][]> {
     // Validate and filter input texts
@@ -745,23 +775,9 @@ export class LocalEmbeddingGenerator {
       throw new Error('No valid texts provided for embedding generation');
     }
 
-    // Provider priority: Ambiance API → OpenAI → Local
+    // Provider priority: Local → OpenAI (explicit) → Error
+    // VoyageAI/Ambiance API removed as service is no longer available
     const providers = [
-      {
-        name: 'ambiance',
-        available: !!this.ambianceApiKey && LocalEmbeddingGenerator.isProviderAvailable('ambiance'),
-        getEmbeddings: async (texts: string[]) => {
-          const response = await apiClient.generateEmbeddings({
-            texts: texts,
-            input_type: 'document', // Use document type for contextual embeddings
-            model: 'voyage-context-3', // Preferred model on server
-            encoding_format: 'int8',
-            include_context: true,
-            context_window: 3,
-          });
-          return response.embeddings;
-        },
-      },
       {
         name: 'openai',
         available: !!this.openai && LocalEmbeddingGenerator.isProviderAvailable('openai'),
@@ -835,7 +851,7 @@ export class LocalEmbeddingGenerator {
           inputType: name === 'ambiance' ? 'document' : 'text',
           model:
             name === 'ambiance'
-              ? 'voyage-context-3'
+              ? process.env.VOYAGEAI_MODEL || 'voyageai-model'
               : name === 'openai'
                 ? this.embeddingModel
                 : name === 'local'
@@ -850,12 +866,16 @@ export class LocalEmbeddingGenerator {
 
         // Validate embeddings structure
         if (!Array.isArray(embeddings) || embeddings.length === 0) {
-          throw new Error(`Invalid embeddings response: empty or invalid format`);
+          throw new Error(`Invalid embeddings response from ${name}: not an array or empty`);
         }
 
         const firstEmbedding = embeddings[0];
+        if (firstEmbedding === undefined) {
+          throw new Error(`Invalid embeddings response from ${name}: first embedding is undefined`);
+        }
+
         if (!Array.isArray(firstEmbedding) || firstEmbedding.length === 0) {
-          throw new Error(`Invalid embedding format: not a valid vector`);
+          throw new Error(`Invalid embedding format from ${name}: not a valid vector or empty`);
         }
 
         const expectedDimensions = this.getExpectedDimensions(name);
@@ -1194,34 +1214,29 @@ export class LocalEmbeddingGenerator {
    * Get the current active provider name
    */
   private getCurrentProvider(): string {
-    // Prioritize local embeddings when explicitly enabled with LOCAL_EMBEDDING_MODEL
-    const useLocalEmbeddings = process.env.USE_LOCAL_EMBEDDINGS === 'true';
-    const localEmbeddingModel = process.env.LOCAL_EMBEDDING_MODEL;
-
+    // Default to local opensource models (transformers.js)
     logger.info('🔧 Provider selection debug', {
-      useLocalEmbeddings,
-      localEmbeddingModel,
       hasAmbianceApiKey: !!this.ambianceApiKey,
       hasOpenAI: !!this.openai,
-      condition: useLocalEmbeddings && localEmbeddingModel,
+      useOpenAI: process.env.USE_OPENAI_EMBEDDINGS,
+      useVoyageAI: false, // VoyageAI is no longer supported
     });
 
-    if (useLocalEmbeddings && localEmbeddingModel) {
-      logger.info('✅ Using local embeddings provider');
-      return 'local';
-    }
-
-    // Fallback to existing priority: Ambiance API → OpenAI → Local
-    if (this.ambianceApiKey) {
-      logger.info('✅ Using voyageai provider');
-      return 'voyageai';
-    }
-    if (this.openai) {
-      logger.info('✅ Using openai provider');
+    // Use OpenAI only if explicitly enabled and key is available
+    if (this.openai && process.env.USE_OPENAI_EMBEDDINGS === 'true') {
+      logger.info('✅ Using openai provider (explicitly enabled)');
       return 'openai';
     }
 
-    logger.info('✅ Using local provider (fallback)');
+    // Use VoyageAI only if explicitly enabled and key is available
+    // VoyageAI support removed as service is no longer available
+    if (false) {
+      logger.info('✅ Using voyageai provider (explicitly enabled)');
+      return 'voyageai';
+    }
+
+    // Default to local opensource models (transformers.js)
+    logger.info('✅ Using local provider (default)');
     return 'local';
   }
 
@@ -1230,9 +1245,9 @@ export class LocalEmbeddingGenerator {
     const provider = this.getCurrentProvider();
     switch (provider) {
       case 'voyageai':
-        return 1024; // voyage-context-3 dimensions
+        return 1024; // VoyageAI model dimensions
       case 'openai':
-        return 1536; // text-embedding-3-small default
+        return 1536; // OpenAI default dimensions
       case 'local':
         return this.localProvider?.getModelInfo().dimensions || 384; // transformers.js default
       default:
@@ -1543,16 +1558,23 @@ export class LocalEmbeddingGenerator {
   }
 
   /**
-   * Check if embedding generation is available (Ambiance API, OpenAI, or Local)
+   * Check if embedding generation is available
    */
   static isAvailable(): boolean {
-    // Available if storage is enabled AND (Ambiance API OR OpenAI ready OR local models can be used)
+    // Available if storage is enabled
     const storageEnabled = LocalEmbeddingStorage.isEnabled();
-    const ambianceReady = !!process.env.AMBIANCE_API_KEY;
-    const openaiReady = openaiService.isReady();
+    if (!storageEnabled) return false;
+
+    // Check if any provider is explicitly enabled and available
+    const openaiEnabled =
+      process.env.OPENAI_API_KEY && process.env.USE_OPENAI_EMBEDDINGS === 'true';
+    const voyageAIEnabled = false; // VoyageAI is no longer supported
+
+    const openaiReady = openaiEnabled && openaiService.isReady();
+    const voyageAIReady = voyageAIEnabled; // Ambiance API key presence is sufficient
     const localAvailable = true; // Transformers.js is always available once installed
 
-    return storageEnabled && (ambianceReady || openaiReady || localAvailable);
+    return openaiReady || voyageAIReady || localAvailable;
   }
 }
 

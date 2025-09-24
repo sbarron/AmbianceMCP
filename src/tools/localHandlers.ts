@@ -143,7 +143,9 @@ async function indexProjectInBackground(project: LocalProject): Promise<void> {
           stats.symbolCount += result.symbols.length;
         }
       } catch (error) {
-        logger.error(`Error indexing file ${filePath}:`, { error: error instanceof Error ? error.message : String(error) });
+        logger.error(`Error indexing file ${filePath}:`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 

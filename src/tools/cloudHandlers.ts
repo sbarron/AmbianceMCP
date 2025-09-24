@@ -6,7 +6,10 @@ let apiClient: AmbianceAPIClient | null = null;
 function getAPIClient(): AmbianceAPIClient {
   if (!apiClient) {
     const apiKey = process.env.AMBIANCE_API_KEY;
-    const apiURL = process.env.AMBIANCE_API_URL || process.env.AMBIANCE_API_BASE_URL || 'https://api.ambiance.dev';
+    const apiURL =
+      process.env.AMBIANCE_API_URL ||
+      process.env.AMBIANCE_API_BASE_URL ||
+      'https://api.ambiance.dev';
 
     if (!apiKey) {
       throw new Error('AMBIANCE_API_KEY environment variable is required');
@@ -123,7 +126,9 @@ export async function getRepositories(): Promise<any[]> {
     const client = getAPIClient();
     return await client.getRepositories();
   } catch (error) {
-    logger.error('❌ Error fetching repositories:', { error: error instanceof Error ? error.message : String(error) });
+    logger.error('❌ Error fetching repositories:', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   }
 }
@@ -138,7 +143,9 @@ export async function getAlerts(repoId?: string, since?: string): Promise<any[]>
     const client = getAPIClient();
     return await client.getAlerts(repoId, since);
   } catch (error) {
-    logger.error('❌ Error fetching alerts:', { error: error instanceof Error ? error.message : String(error) });
+    logger.error('❌ Error fetching alerts:', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   }
 }

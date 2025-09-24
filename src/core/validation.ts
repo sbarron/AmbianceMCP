@@ -458,7 +458,7 @@ export interface Message {
 
 // Configuration for context validation
 const CONTEXT_VALIDATION_CONFIG = {
-  PLACEHOLDER_PATHS: new Set(['enhanced_context']), // Note: 'embedding_similarity_search' is NOT a placeholder
+  PLACEHOLDER_PATHS: new Set(['enhanced_context']), // Note: 'embedding_similarity_search' is NOT a placeholder, 'enhanced_context' is now allowed as fallback
   MIN_BYTES_PER_FILE: 64,
   MIN_DYNAMIC_TOKENS: 32,
   MIN_DYNAMIC_TOKEN_RATIO: 0.15,
@@ -798,27 +798,34 @@ export function validateEnhancedContext(content: string, metadata?: any): void {
   }
 
   // For embedding contexts, be more lenient with placeholder detection
-  // TEMPORARILY DISABLED: Allow embedding contexts to pass validation even with limited content
-  if (!isEmbeddingContext && !hasSubstantiveText(content)) {
+  if (!hasSubstantiveText(content)) {
     logger.warn('🚫 Enhanced context validation: no substantive content detected', {
       contentLength: content.length,
       tokenCount,
       isEmbeddingContext,
       contentPreview: content.substring(0, 200),
     });
-    // Don't throw error for now - allow processing to continue
-    // throw new ValidationError({
-    //   code: 'INSUFFICIENT_CONTEXT',
-    //   message: 'Enhanced context contains no substantive content',
-    //   context: {
-    //     contentLength: content.length,
-    //     tokenCount,
-    //     metadata,
-    //     isEmbeddingContext,
-    //     contentPreview: content.substring(0, 200)
-    //   },
-    //   suggestion: 'Enhanced context appears to be placeholder data. Try different retrieval parameters',
-    // });
+
+    // Allow embedding contexts with minimal content to pass validation
+    if (isEmbeddingContext) {
+      logger.debug('✅ Allowing embedding context with minimal content to pass validation');
+      return;
+    }
+
+    // For non-embedding contexts, still throw error
+    throw new ValidationError({
+      code: 'INSUFFICIENT_CONTEXT',
+      message: 'Enhanced context contains no substantive content',
+      context: {
+        contentLength: content.length,
+        tokenCount,
+        metadata,
+        isEmbeddingContext,
+        contentPreview: content.substring(0, 200),
+      },
+      suggestion:
+        'Enhanced context appears to be placeholder data. Try different retrieval parameters',
+    });
   }
 }
 

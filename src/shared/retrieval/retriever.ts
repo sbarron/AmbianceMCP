@@ -19,6 +19,7 @@ import {
 import { logRetrievalTelemetry } from '../telemetry';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding } from '../../local/quantization';
 
 export class SharedRetriever implements Retriever {
   private storage: LocalEmbeddingStorage;
@@ -627,19 +628,26 @@ export class SharedRetriever implements Retriever {
   }
 
   /**
-   * Calculate cosine similarity between two vectors
+   * Calculate cosine similarity between two vectors (handles both quantized and float32)
    */
-  private cosineSimilarity(a: number[], b: number[]): number {
-    if (a.length !== b.length) return 0;
+  private cosineSimilarity(
+    a: number[] | QuantizedEmbedding,
+    b: number[] | QuantizedEmbedding
+  ): number {
+    // Normalize both embeddings to float32 arrays
+    const aFloat32 = isQuantized(a) ? dequantizeInt8ToFloat32(a) : a;
+    const bFloat32 = isQuantized(b) ? dequantizeInt8ToFloat32(b) : b;
+
+    if (aFloat32.length !== bFloat32.length) return 0;
 
     let dotProduct = 0;
     let normA = 0;
     let normB = 0;
 
-    for (let i = 0; i < a.length; i++) {
-      dotProduct += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
+    for (let i = 0; i < aFloat32.length; i++) {
+      dotProduct += aFloat32[i] * bFloat32[i];
+      normA += aFloat32[i] * aFloat32[i];
+      normB += bFloat32[i] * bFloat32[i];
     }
 
     if (normA === 0 || normB === 0) return 0;

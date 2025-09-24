@@ -288,24 +288,54 @@ Try using a more specific directory or check the project path.`;
     });
 
     // Generate query embedding using same model as stored embeddings (if possible)
+    logger.debug('🔍 Generating query embedding', {
+      query: options.query,
+      projectId: actualProjectId,
+    });
+
     const queryEmbedding = await this.embeddingGenerator.generateQueryEmbedding(
       options.query!,
       actualProjectId
     );
 
-    // Search for similar chunks
-    const similarChunks = await this.embeddingStorage.searchSimilarEmbeddings(
+    logger.debug('✅ Query embedding generated', {
+      query: options.query,
+      embeddingLength: queryEmbedding.length,
+      embeddingPreview: queryEmbedding.slice(0, 5),
+    });
+
+    // Use consistent threshold - let's try a lower threshold first to see if we can find relevant chunks
+    const similarityThreshold = options.embeddingSimilarityThreshold || 0.1; // Lower threshold for better recall
+
+    // Search for similar chunks (get more than we need to see what's available)
+    const allSimilarChunks = await this.embeddingStorage.searchSimilarEmbeddings(
       actualProjectId,
       queryEmbedding,
-      options.maxSimilarChunks || 10,
-      options.embeddingSimilarityThreshold || 0.2
+      Math.max(options.maxSimilarChunks || 10, 20), // Get more chunks to analyze
+      0.0 // Get all chunks above 0 similarity first
     );
+
+    logger.info('🔍 Raw similarity search results', {
+      query: options.query,
+      totalChunksFound: allSimilarChunks.length,
+      allSimilarities: allSimilarChunks.map(c => ({
+        similarity: c.similarity.toFixed(3),
+        filePath: c.chunk.filePath.split('/').pop(), // Just filename
+        startLine: c.chunk.metadata.startLine,
+      })),
+    });
+
+    // Apply the similarity threshold
+    const similarChunks = allSimilarChunks.filter(chunk => chunk.similarity >= similarityThreshold);
 
     const searchTime = Date.now() - searchStart;
 
     if (similarChunks.length === 0) {
       logger.info('🔍 No similar chunks found above threshold', {
-        threshold: options.embeddingSimilarityThreshold || 0.7,
+        threshold: similarityThreshold,
+        query: options.query,
+        projectId: actualProjectId,
+        totalEmbeddings: stats.totalChunks,
       });
 
       // If no chunks found and we have compatibility issues, provide specific guidance
@@ -326,6 +356,20 @@ Try using a more specific directory or check the project path.`;
 
       return null;
     }
+
+    // Log successful similarity search results
+    logger.info('✅ Similarity search found chunks above threshold', {
+      query: options.query,
+      chunksFound: similarChunks.length,
+      totalRawChunks: allSimilarChunks.length,
+      topSimilarities: similarChunks.slice(0, 3).map(c => ({
+        similarity: c.similarity.toFixed(3),
+        filePath: c.chunk.filePath,
+        startLine: c.chunk.metadata.startLine,
+      })),
+      threshold: similarityThreshold,
+      chunksBelowThreshold: allSimilarChunks.length - similarChunks.length,
+    });
 
     // Sort and limit chunks first
     const maxChunks = options.maxSimilarChunks || 10;

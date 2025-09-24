@@ -82,11 +82,9 @@ export const localSemanticCompactTool = {
         description:
           'Analysis strategy: auto-detect from query, or specify: init-read-write (DB/storage), api-route (endpoints), auth (authentication), error-driven (debugging)',
       },
-      // Legacy parameters for backward compatibility
       projectPath: {
         type: 'string',
-        description:
-          'Project directory path (optional - will auto-detect workspace if not provided)',
+        description: 'Project directory path. Can be absolute or relative to workspace.',
       },
       folderPath: {
         type: 'string',
@@ -121,11 +119,18 @@ export const localSemanticCompactTool = {
  * Handler for semantic compaction requests
  */
 export async function handleSemanticCompact(args: any): Promise<any> {
+  // Validate that projectPath is provided
+  if (!args?.projectPath) {
+    throw new Error(
+      '❌ projectPath is required. Please provide an absolute path to the project directory.'
+    );
+  }
+
   // Compose a single-flight key early to dedupe duplicate concurrent calls
   const singleFlightKey = (() => {
     try {
       const q = (args?.query || '').toString().slice(0, 200);
-      const p = args?.projectPath || detectWorkspaceDirectory() || process.cwd();
+      const p = validateAndResolvePath(args.projectPath);
       const f = args?.format || 'enhanced';
       return `${path.resolve(p)}::${f}::${q}`;
     } catch {
@@ -160,24 +165,8 @@ export async function handleSemanticCompact(args: any): Promise<any> {
       embeddingSimilarityThreshold = 0.2,
     } = args;
 
-    // Resolve project path up-front so both enhanced and legacy paths can use it
-    let resolvedProjectPath: string;
-    if (!projectPath) {
-      resolvedProjectPath = detectWorkspaceDirectory();
-      logger.info('🔍 No projectPath provided, using detected workspace', {
-        detectedPath: resolvedProjectPath,
-      });
-    } else {
-      try {
-        resolvedProjectPath = validateAndResolvePath(projectPath);
-      } catch (error) {
-        logger.warn('⚠️ Provided projectPath is invalid, falling back to workspace detection', {
-          providedPath: projectPath,
-          error: (error as Error).message,
-        });
-        resolvedProjectPath = detectWorkspaceDirectory();
-      }
-    }
+    // Validate and resolve project path (now required)
+    const resolvedProjectPath = validateAndResolvePath(projectPath);
 
     // Enhanced mode: Use new local_context implementation if query is provided
     if (query && (format === 'enhanced' || format === 'system-map') && !folderPath) {
@@ -198,6 +187,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
           try {
             const { localContext } = await import('./enhancedLocalContext');
             const prepass = await localContext({
+              projectPath: resolvedProjectPath,
               query,
               taskType: taskType as any,
               maxSimilarChunks: Math.max(10, maxSimilarChunks),
@@ -289,6 +279,7 @@ export async function handleSemanticCompact(args: any): Promise<any> {
         const { localContext } = await import('./enhancedLocalContext');
 
         const enhancedResult = await localContext({
+          projectPath: resolvedProjectPath,
           query,
           taskType: taskType as any,
           maxSimilarChunks,

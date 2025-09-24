@@ -4,11 +4,13 @@
  * @context: Defines the interfaces for the shared embedding-assisted retrieval system
  */
 
+import { QuantizedEmbedding } from '../../local/quantization';
+
 // Index-time record
 export interface IndexedChunk {
   id: string;
   text: string;
-  embedding: number[];
+  embedding: number[] | QuantizedEmbedding; // Support both float32 and quantized int8
   meta: {
     path: string;
     facet_tags: string[];

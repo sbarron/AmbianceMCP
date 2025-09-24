@@ -785,7 +785,8 @@ export class ProjectHintsGenerator {
   }
 
   /**
-   * Use OpenAI service for intelligent folder analysis
+   * Use OpenAI service for intelligent folder analysis with enhanced content
+   * @improvement: Now includes actual code content instead of just file names for better AI analysis
    */
   private async analyzeWithAI(
     folderPath: string,
@@ -797,17 +798,26 @@ export class ProjectHintsGenerator {
   } | null> {
     if (!this.openaiService) return null;
 
+    // Get file names and sample key content for better analysis
     const fileNames = files.slice(0, 10).map(f => path.basename(f.relPath));
+    const keyContent = await this.sampleKeyContent(files);
 
     const prompt = `Analyze this code folder:
 
 Folder: ${folderPath}
 Files: ${fileNames.join(', ')}
 
-Determine the folder's purpose in 1-2 sentences. Focus on:
+${
+  keyContent
+    ? `Key Code Content:
+${keyContent}
+`
+    : ''
+}Determine the folder's purpose in 1-2 sentences. Focus on:
 - What type of code lives here
 - How it fits in the application architecture
 - Key responsibilities
+- Patterns and architectural decisions visible in the code
 
 Return JSON:
 {
@@ -834,6 +844,206 @@ Return JSON:
   }
 
   /**
+   * Sample key content from files for AI analysis
+   */
+  private async sampleKeyContent(files: FileInfo[]): Promise<string | null> {
+    try {
+      // Select the most informative files (limit to 3-5 files to avoid token limits)
+      const keyFiles = this.selectKeyFilesForAnalysis(files).slice(0, 3);
+
+      if (keyFiles.length === 0) {
+        return null;
+      }
+
+      let totalContent = '';
+      const maxContentSize = 3000; // Limit total content size
+
+      for (const file of keyFiles) {
+        if (totalContent.length > maxContentSize) break;
+
+        try {
+          const content = await readFile(file.absPath, 'utf-8');
+          const sampledContent = this.extractKeySnippets(content, file.language);
+
+          if (sampledContent) {
+            const fileHeader = `\n=== ${path.basename(file.relPath)} ===\n`;
+            const remainingSpace = maxContentSize - totalContent.length - fileHeader.length;
+
+            if (remainingSpace > 100) {
+              totalContent += fileHeader + sampledContent.substring(0, remainingSpace) + '\n';
+            }
+          }
+        } catch (error) {
+          // Skip files that can't be read
+          continue;
+        }
+      }
+
+      return totalContent.trim() || null;
+    } catch (error) {
+      logger.warn('Failed to sample key content for AI analysis', {
+        error: (error as Error).message,
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Select the most informative files for AI analysis
+   */
+  private selectKeyFilesForAnalysis(files: FileInfo[]): FileInfo[] {
+    // Prioritize files by importance indicators
+    return files
+      .filter(file => {
+        const name = path.basename(file.relPath).toLowerCase();
+        // Include files that are likely to be informative
+        return (
+          name.includes('index') ||
+          name.includes('main') ||
+          name.includes('service') ||
+          name.includes('util') ||
+          name.includes('helper') ||
+          file.size > 5000 || // Larger files are likely more informative
+          ['package.json', 'tsconfig.json', 'README.md'].includes(name)
+        );
+      })
+      .sort((a, b) => {
+        // Sort by relevance for analysis
+        const aScore = this.getFileAnalysisScore(a);
+        const bScore = this.getFileAnalysisScore(b);
+        return bScore - aScore;
+      });
+  }
+
+  /**
+   * Get analysis score for a file (higher = more informative)
+   */
+  private getFileAnalysisScore(file: FileInfo): number {
+    let score = 0;
+    const name = path.basename(file.relPath).toLowerCase();
+
+    // Boost score for key files
+    if (name.includes('index')) score += 10;
+    if (name.includes('main')) score += 10;
+    if (name.includes('service')) score += 8;
+    if (name.includes('util') || name.includes('helper')) score += 6;
+
+    // Boost score for configuration files
+    if (['package.json', 'tsconfig.json', 'README.md'].includes(name)) score += 15;
+
+    // Boost score for larger files (likely more comprehensive)
+    if (file.size > 10000) score += 5;
+    if (file.size > 50000) score += 10;
+
+    return score;
+  }
+
+  /**
+   * Extract key code snippets from file content
+   */
+  private extractKeySnippets(content: string, language: string): string {
+    const lines = content.split('\n');
+    const snippets: string[] = [];
+
+    // Language-specific extraction patterns
+    if (language === 'typescript' || language === 'javascript') {
+      // Extract imports, interfaces, classes, and key functions
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+
+        // Include import statements
+        if (line.startsWith('import ')) {
+          snippets.push(line);
+          continue;
+        }
+
+        // Include interface/type definitions
+        if (
+          line.startsWith('interface ') ||
+          line.startsWith('type ') ||
+          line.startsWith('export interface') ||
+          line.startsWith('export type')
+        ) {
+          // Include the definition and a few following lines
+          for (let j = i; j < Math.min(i + 10, lines.length); j++) {
+            snippets.push(lines[j]);
+            if (lines[j].includes('}')) break;
+          }
+          i += 9; // Skip ahead
+          continue;
+        }
+
+        // Include class definitions
+        if (line.startsWith('class ') || line.startsWith('export class')) {
+          // Include the class definition and key methods
+          for (let j = i; j < Math.min(i + 15, lines.length); j++) {
+            snippets.push(lines[j]);
+            if (lines[j].includes('}')) break;
+          }
+          i += 14; // Skip ahead
+          continue;
+        }
+
+        // Include function definitions
+        if (
+          (line.includes('function ') || line.includes('const ') || line.includes('async ')) &&
+          (line.includes('=') || line.includes('('))
+        ) {
+          // Include function signature and start of body
+          snippets.push(line);
+          if (i + 1 < lines.length && lines[i + 1].includes('{')) {
+            snippets.push(lines[i + 1]);
+            i++; // Skip the opening brace line
+          }
+          continue;
+        }
+
+        // Include key constants and exports
+        if (
+          line.startsWith('export const') ||
+          line.startsWith('export function') ||
+          line.includes('const ')
+        ) {
+          snippets.push(line);
+          continue;
+        }
+      }
+    } else if (language === 'python') {
+      // Extract imports, classes, and functions
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+
+        // Include imports
+        if (line.startsWith('import ') || line.startsWith('from ')) {
+          snippets.push(line);
+          continue;
+        }
+
+        // Include class definitions
+        if (line.startsWith('class ')) {
+          for (let j = i; j < Math.min(i + 10, lines.length); j++) {
+            snippets.push(lines[j]);
+            if (lines[j].includes(':')) break;
+          }
+          i += 9;
+          continue;
+        }
+
+        // Include function definitions
+        if (line.startsWith('def ')) {
+          snippets.push(line);
+          continue;
+        }
+      }
+    }
+
+    // Limit total snippet size and return
+    const maxSnippetSize = 1000;
+    const result = snippets.slice(0, 20).join('\n'); // Limit lines
+    return result.length > maxSnippetSize ? result.substring(0, maxSnippetSize) + '...' : result;
+  }
+
+  /**
    * Analyze file content to improve confidence scores
    */
   private async analyzeContentForConfidence(
@@ -844,8 +1054,11 @@ Return JSON:
     keywords: string[];
     confidence: number;
   }> {
+    // Use the same key file selection logic for consistency
+    const keyFiles = this.selectKeyFilesForAnalysis(files).slice(0, 3);
+
     const fileContents = await Promise.all(
-      files.slice(0, 5).map(async f => {
+      keyFiles.map(async f => {
         try {
           return await readFile(f.absPath, 'utf-8');
         } catch {

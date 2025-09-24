@@ -18,6 +18,7 @@ import { estimateTokens as estimateTokensShared } from '../utils/toolHelpers';
 // ===== API INTERFACES =====
 
 export interface LocalContextRequest {
+  projectPath: string;
   query: string;
   taskType?: 'understand' | 'debug' | 'trace' | 'spec' | 'test';
   maxSimilarChunks?: number;
@@ -347,11 +348,19 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
   const startTime = Date.now();
 
   logger.info('🔍 Enhanced local context request', {
+    projectPath: req.projectPath,
     query: req.query,
     taskType: req.taskType,
     attackPlan: req.attackPlan,
     maxTokens: req.maxTokens,
   });
+
+  // Validate that projectPath is provided
+  if (!req.projectPath) {
+    throw new Error(
+      '❌ projectPath is required. Please provide an absolute path to the project directory.'
+    );
+  }
 
   // Set defaults
   const request = {
@@ -366,7 +375,7 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
 
   try {
     // 1. Load project indices (reuse project_hints cache)
-    const indices = await loadProjectIndices(request.useProjectHintsCache);
+    const indices = await loadProjectIndices(request.projectPath, request.useProjectHintsCache);
 
     // 2. Choose attack plan
     const plan = chooseAttackPlan(request.attackPlan, request.query);
@@ -472,16 +481,17 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
 
 // ===== IMPLEMENTATION FUNCTIONS =====
 
-async function loadProjectIndices(useCache: boolean): Promise<ProjectContext> {
+async function loadProjectIndices(projectPath: string, useCache: boolean): Promise<ProjectContext> {
   // Import project hints functionality
   const { buildEnhancedProjectSummary } = await import('./enhancedHints');
   const { FileDiscovery } = await import('../../core/compactor/fileDiscovery');
-  const { detectWorkspaceDirectory } = await import('../utils/pathUtils');
 
-  const projectPath = detectWorkspaceDirectory();
+  // Validate and resolve the project path
+  const { validateAndResolvePath } = await import('../utils/pathUtils');
+  const validatedProjectPath = validateAndResolvePath(projectPath);
 
   try {
-    const fileDiscovery = new FileDiscovery(projectPath, {
+    const fileDiscovery = new FileDiscovery(validatedProjectPath, {
       maxFileSize: 200000,
     });
 
@@ -489,7 +499,10 @@ async function loadProjectIndices(useCache: boolean): Promise<ProjectContext> {
 
     if (useCache) {
       // Try to reuse existing enhanced project summary
-      const enhancedSummary = await buildEnhancedProjectSummary(projectPath, files.slice(0, 100));
+      const enhancedSummary = await buildEnhancedProjectSummary(
+        validatedProjectPath,
+        files.slice(0, 100)
+      );
 
       return {
         files,
