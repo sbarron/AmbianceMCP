@@ -128,11 +128,17 @@ export const localFileSummaryTool = {
 export async function handleFileSummary(args: any): Promise<any> {
   const { filePath, includeSymbols = true, maxSymbols = 20, format = 'structured' } = args;
 
+  logger.info('🔍 handleFileSummary called with', {
+    filePath,
+    argsKeys: Object.keys(args),
+    args: args,
+  });
+
   // Validate that filePath is provided and is absolute
   if (!filePath) {
     throw new Error('❌ filePath is required. Please provide an absolute path to the file.');
   }
-  const resolvedFilePath = validateAndResolvePath(filePath, 'filePath');
+  const resolvedFilePath = validateAndResolvePath(filePath);
   const projectPath = path.dirname(resolvedFilePath);
 
   logger.info('📄 Analyzing file', {
@@ -167,7 +173,29 @@ export async function handleFileSummary(args: any): Promise<any> {
     const compactor = new SemanticCompactor(projectPath);
 
     // 🔑 Get comprehensive analysis directly from AST (bypass semantic compactor filtering)
-    const astAnalysis = await getComprehensiveASTAnalysis(resolvedFilePath);
+    logger.info('🔍 About to call getComprehensiveASTAnalysis', { resolvedFilePath });
+    let astAnalysis;
+    try {
+      astAnalysis = await getComprehensiveASTAnalysis(resolvedFilePath);
+    } catch (error) {
+      logger.error('❌ getComprehensiveASTAnalysis failed', {
+        error: error instanceof Error ? error.message : String(error),
+        filePath: resolvedFilePath,
+      });
+      throw error;
+    }
+
+    if (!astAnalysis) {
+      logger.error('❌ getComprehensiveASTAnalysis returned undefined', { resolvedFilePath });
+      throw new Error('AST analysis returned undefined');
+    }
+
+    logger.info('✅ Got AST analysis', {
+      totalSymbols: astAnalysis?.totalSymbols,
+      hasAllFunctions: !!astAnalysis?.allFunctions,
+      hasAllClasses: !!astAnalysis?.allClasses,
+      hasAllInterfaces: !!astAnalysis?.allInterfaces,
+    });
 
     // Get semantic compactor results for comparison (but don't rely on them for symbol count)
     const nodes = await compactor.getSummary(resolvedFilePath);
@@ -389,11 +417,18 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
   topSymbols: any[];
 }> {
   try {
+    logger.info('🔍 Starting AST analysis', { filePath });
     const { ASTParser } = await import('../../core/compactor/astParser');
     const language = getLanguageFromPath(filePath) as any;
+    logger.info('📝 Detected language', { language });
     const parser = new ASTParser();
 
+    logger.info('⚙️ Created AST parser, about to parse file');
     const parsedFile = await parser.parseFile(filePath, language);
+    logger.info('✅ Parsed file successfully', {
+      hasSymbols: !!parsedFile?.symbols,
+      symbolCount: parsedFile?.symbols?.length || 0,
+    });
 
     // Extract all functions (including class methods)
     const allFunctions: any[] = [];

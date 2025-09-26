@@ -43,18 +43,8 @@ export function validateAndResolvePath(inputPath: string, basePath?: string): st
     throw new Error(`Path does not exist: ${resolvedPath}`);
   }
 
-  // Canonicalize via realpath and normalize for ID stability across platforms
-  let real: string;
-  try {
-    real = fs.realpathSync.native(resolvedPath);
-  } catch {
-    real = resolvedPath;
-  }
-  let normalized = real.replace(/\\+/g, '\\').replace(/[\\/]+$/g, '');
-  if (process.platform === 'win32') {
-    normalized = normalized.toLowerCase();
-  }
-  return normalized;
+  // Return the resolved path with original case for file operations
+  return resolvedPath;
 }
 
 /**

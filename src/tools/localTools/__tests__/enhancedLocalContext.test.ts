@@ -263,6 +263,7 @@ describe('Enhanced Local Context - Integration Tests', () => {
 
   it('should handle database queries end-to-end', async () => {
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: 'How does database connection and storage work?',
       taskType: 'understand',
       maxTokens: 2000,
@@ -287,6 +288,7 @@ describe('Enhanced Local Context - Integration Tests', () => {
 
   it('should handle API route queries', async () => {
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: 'Show me the API endpoints and routing',
       taskType: 'understand',
       attackPlan: 'api-route',
@@ -310,6 +312,7 @@ describe('Enhanced Local Context - Integration Tests', () => {
 
   it('should respect token budgets', async () => {
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: 'Analyze all code patterns',
       taskType: 'understand',
       maxTokens: 500, // Very small budget
@@ -359,6 +362,7 @@ describe('Enhanced Local Context - Integration Tests', () => {
 
   it('includes env hints for SUPABASE when topic is auth', async () => {
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: 'auth supabase login',
       taskType: 'understand',
       maxTokens: 1000,
@@ -381,6 +385,7 @@ describe('Enhanced Local Context - Golden Tests', () => {
   
   it('should produce consistent output for database query', async () => {
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: 'database initialization',
       taskType: 'understand',
       attackPlan: 'init-read-write',
@@ -400,6 +405,7 @@ describe('Enhanced Local Context - Golden Tests', () => {
 
   it('should have consistent metadata format', async () => {
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: 'test query',
       taskType: 'debug',
       maxTokens: 1000,
@@ -432,6 +438,7 @@ describe('Enhanced Local Context - Performance Tests', () => {
     const startTime = Date.now();
     
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: 'comprehensive code analysis',
       taskType: 'understand',
       maxTokens: 3000,
@@ -461,6 +468,7 @@ describe('Enhanced Local Context - Performance Tests', () => {
     mockReadFileSync.mockReturnValue('export const test = "value";');
 
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: 'find test patterns',
       taskType: 'test',
       maxTokens: 2000,
@@ -480,6 +488,7 @@ describe('Enhanced Local Context - Performance Tests', () => {
 describe('Enhanced Local Context - Error Handling', () => {
   it('should handle invalid queries gracefully', async () => {
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: '', // Empty query
       taskType: 'understand',
       maxTokens: 1000,
@@ -499,6 +508,7 @@ describe('Enhanced Local Context - Error Handling', () => {
     });
 
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: 'analyze missing files',
       taskType: 'debug',
       maxTokens: 1000,
@@ -514,6 +524,7 @@ describe('Enhanced Local Context - Error Handling', () => {
 
   it('should respect maximum token limits', async () => {
     const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
       query: 'comprehensive analysis',
       taskType: 'understand',
       maxTokens: 100, // Very small limit

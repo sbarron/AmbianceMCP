@@ -14,6 +14,7 @@ import { EnhancedProjectSummary } from './enhancedHints';
 import { logger } from '../../utils/logger';
 import * as path from 'path';
 import { estimateTokens as estimateTokensShared } from '../utils/toolHelpers';
+import { validateAndResolvePath } from '../utils/pathUtils';
 
 // ===== API INTERFACES =====
 
@@ -487,7 +488,6 @@ async function loadProjectIndices(projectPath: string, useCache: boolean): Promi
   const { FileDiscovery } = await import('../../core/compactor/fileDiscovery');
 
   // Validate and resolve the project path
-  const { validateAndResolvePath } = await import('../utils/pathUtils');
   const validatedProjectPath = validateAndResolvePath(projectPath);
 
   try {
