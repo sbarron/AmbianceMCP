@@ -21,27 +21,52 @@ import { parse as babelParse } from '@babel/parser';
 import traverse from '@babel/traverse';
 import * as t from '@babel/types';
 import { readFile } from 'fs/promises';
-// Optional tree-sitter import
-let Parser: any = null;
-try {
-  Parser = require('tree-sitter');
-} catch {
-  Parser = null;
-}
 import { SupportedLanguage } from './fileDiscovery';
 import { logger } from '../../utils/logger';
 
-// Tree-sitter functionality
-let TypeScript: any;
-let JavaScript: any;
-let Python: any;
+// Optional tree-sitter import
+let Parser: any = null;
+let TypeScript: any = null;
+let JavaScript: any = null;
+let Python: any = null;
 
-try {
-  TypeScript = require('tree-sitter-typescript').typescript;
-  JavaScript = require('tree-sitter-javascript');
-  Python = require('tree-sitter-python');
-} catch (error) {
-  // Tree-sitter parsers not available - parsing will be limited to Babel
+// Dynamic import for ESM-only tree-sitter packages
+async function initializeAstParsers() {
+  try {
+    if (!Parser) {
+      Parser = await import('tree-sitter');
+      Parser = Parser.default || Parser;
+    }
+
+    if (!TypeScript) {
+      const tsModule = await import('tree-sitter-typescript');
+      TypeScript = tsModule.default.typescript;
+    }
+
+    if (!JavaScript) {
+      const jsModule = await import('tree-sitter-javascript');
+      JavaScript = jsModule.default;
+    }
+
+    if (!Python) {
+      try {
+        const pyModule = await import('tree-sitter-python');
+        Python = pyModule.default;
+        logger.debug('✅ tree-sitter-python loaded successfully');
+      } catch (error) {
+        logger.warn('⚠️ tree-sitter-python not available', {
+          error: error instanceof Error ? error.message : String(error),
+          fallback: 'Will use fallback parsing for Python files'
+        });
+      }
+    }
+
+    logger.debug('✅ AST parsers initialized successfully');
+  } catch (error) {
+    logger.warn('⚠️ AST parsers not available, using Babel fallback', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 // Simple parser creation function to replace missing getParser
@@ -192,7 +217,19 @@ export class ASTParser {
           return await this.parseJavaScriptTypeScript(filePath, content, language);
 
         case 'python':
-          return await this.parsePython(filePath, content);
+          logger.info('🔍 Attempting Python parsing', {
+            treeSitterAvailable: !!Python,
+            filePath,
+          });
+
+          // Force regex fallback for now to test if it works
+          logger.info('🔄 Using regex fallback for Python parsing');
+          const result = this.parsePythonWithRegex(filePath, content);
+          logger.info('✅ Python regex parsing completed', {
+            symbols: result.symbols.length,
+            imports: result.imports.length,
+          });
+          return result;
 
         default:
           // For unsupported languages, use tree-sitter fallback
@@ -500,6 +537,91 @@ export class ASTParser {
   }
 
   /**
+   * Parse Python files using regex fallback when tree-sitter fails
+   */
+  private parsePythonWithRegex(filePath: string, content: string): ParsedFile {
+    const symbols: Symbol[] = [];
+    const imports: ImportStatement[] = [];
+    const exports: ExportStatement[] = [];
+    const errors: string[] = [];
+
+    logger.info('🔍 Starting Python regex parsing', { filePath, contentLength: content.length });
+
+    try {
+      const lines = content.split('\n');
+      let currentLine = 1;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmedLine = line.trim();
+
+        // Check for function definitions
+        const funcMatch = trimmedLine.match(/^def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/);
+        if (funcMatch) {
+          const funcName = funcMatch[1];
+          logger.debug('✅ Found Python function', { name: funcName, line: currentLine, signature: trimmedLine });
+          symbols.push({
+            name: funcName,
+            type: 'function',
+            signature: trimmedLine,
+            startLine: currentLine,
+            endLine: currentLine + 10, // Estimate - will be refined later
+            isExported: false,
+            body: lines.slice(i, Math.min(i + 10, lines.length)).join('\n'),
+          });
+        }
+
+        // Check for class definitions
+        const classMatch = trimmedLine.match(/^class\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+        if (classMatch) {
+          const className = classMatch[1];
+          logger.debug('✅ Found Python class', { name: className, line: currentLine, signature: trimmedLine });
+          symbols.push({
+            name: className,
+            type: 'class',
+            signature: trimmedLine,
+            startLine: currentLine,
+            endLine: currentLine + 10, // Estimate - will be refined later
+            isExported: false,
+            body: lines.slice(i, Math.min(i + 10, lines.length)).join('\n'),
+          });
+        }
+
+        // Check for import statements
+        const importMatch = trimmedLine.match(/^(?:from\s+([a-zA-Z_.]+)\s+)?import\s+([a-zA-Z_.*, ]+)/);
+        if (importMatch) {
+          const [, fromModule, importsStr] = importMatch;
+          const importNames = importsStr.split(',').map(s => s.trim().split(' as ')[0].trim());
+          imports.push({
+            source: fromModule || '',
+            specifiers: importNames.map(name => ({ name, type: 'named' as const })),
+          });
+        }
+
+        currentLine++;
+      }
+
+      logger.info('✅ Python regex parsing completed', {
+        functions: symbols.filter(s => s.type === 'function').length,
+        classes: symbols.filter(s => s.type === 'class').length,
+        imports: imports.length,
+      });
+
+    } catch (error) {
+      errors.push(`Regex parsing error: ${(error as Error).message}`);
+    }
+
+    return {
+      absPath: filePath,
+      language: 'python',
+      symbols,
+      imports,
+      exports,
+      errors,
+    };
+  }
+
+  /**
    * Fallback parsing using tree-sitter with cached parsers
    */
   private async parseWithTreeSitter(
@@ -528,16 +650,46 @@ export class ASTParser {
 
         if (parser) {
           const tree = parser.parse(content);
-          const definitions = this.extractDefinitionsFromTree(tree.rootNode);
+
+          // Debug: Log what we get from tree-sitter
+          logger.debug('🔍 Tree-sitter analysis', {
+            language: langCode,
+            rootNodeType: tree.rootNode.type,
+            rootNodeChildCount: tree.rootNode.childCount,
+            firstFewChildren: Array.from(tree.rootNode.children.slice(0, 5)).map(child => ({
+              type: (child as any).type,
+              text: content.slice((child as any).startIndex, (child as any).endIndex).substring(0, 50)
+            }))
+          });
+
+          const definitions = this.extractDefinitionsFromTree(tree.rootNode, content);
+
+          logger.debug('🔍 Found definitions', {
+            count: definitions.length,
+            definitions: definitions.map(def => ({
+              startLine: def.startLine,
+              endLine: def.endLine,
+              lines: content.split('\n').slice(def.startLine - 1, def.endLine).join('\n').substring(0, 50)
+            }))
+          });
 
           const lines = content.split('\n');
           definitions.forEach(def => {
             const text = lines.slice(def.startLine - 1, def.endLine).join('\n');
             const name = this.extractNameFromDefinition(text);
 
+            // Determine symbol type based on content and node type
+            let symbolType: 'function' | 'class' | 'variable' | 'interface' | 'type' | 'export' | 'import' | 'method' = 'function';
+            if (text.includes('class')) {
+              symbolType = 'class';
+            } else if (text.includes('def ')) {
+              symbolType = 'function';
+            }
+
+            // Add symbols (functions, classes, etc.)
             symbols.push({
               name: name || 'anonymous',
-              type: text.includes('class') ? 'class' : 'function',
+              type: symbolType,
               signature: text.split('\n')[0].trim(),
               startLine: def.startLine,
               endLine: def.endLine,
@@ -554,15 +706,28 @@ export class ASTParser {
               const text = lines.slice(def.startLine - 1, def.endLine).join('\n');
               const name = this.extractNameFromDefinition(text);
 
-              symbols.push({
-                name: name || 'anonymous',
-                type: text.includes('class') ? 'class' : 'function',
-                signature: text.split('\n')[0].trim(),
-                startLine: def.startLine,
-                endLine: def.endLine,
-                isExported: text.includes('export'),
-                body: text,
-              });
+              // Determine symbol type based on content
+              let symbolType: 'function' | 'class' | 'variable' | 'interface' | 'type' | 'export' | 'import' | 'method' = 'function';
+              if (text.includes('class')) {
+                symbolType = 'class';
+              } else if (text.includes('def ')) {
+                symbolType = 'function';
+              } else if (text.includes('export')) {
+                symbolType = 'export';
+              }
+
+              // Only add actual symbols (functions, classes, etc.), not export statements
+              if (symbolType !== 'export') {
+                symbols.push({
+                  name: name || 'anonymous',
+                  type: symbolType,
+                  signature: text.split('\n')[0].trim(),
+                  startLine: def.startLine,
+                  endLine: def.endLine,
+                  isExported: text.includes('export'),
+                  body: text,
+                });
+              }
             });
           }
         }
@@ -584,11 +749,29 @@ export class ASTParser {
   /**
    * Extract definitions from tree-sitter tree
    */
-  private extractDefinitionsFromTree(node: any): Array<{ startLine: number; endLine: number }> {
+  private extractDefinitionsFromTree(node: any, content?: string): Array<{ startLine: number; endLine: number }> {
     const definitions: Array<{ startLine: number; endLine: number }> = [];
 
     function traverse(n: any) {
-      if (n.type === 'function_declaration' || n.type === 'class_declaration') {
+      // Debug: Log node types we're encountering
+      if (n.type.includes('function') || n.type.includes('class') || n.type.includes('def') || n.type.includes('import')) {
+        const nodeText = content ? content.slice(n.startIndex, n.endIndex).substring(0, 100) : '';
+        logger.debug('🔍 Found potential definition node', {
+          type: n.type,
+          startLine: n.startPosition.row + 1,
+          endLine: n.endPosition.row + 1,
+          text: nodeText
+        });
+      }
+
+      // Handle different node types for different languages
+      if (n.type === 'function_declaration' || n.type === 'class_declaration' ||
+          n.type === 'function_definition' || n.type === 'class_definition') {
+        logger.debug('✅ Found definition', {
+          type: n.type,
+          startLine: n.startPosition.row + 1,
+          endLine: n.endPosition.row + 1,
+        });
         definitions.push({
           startLine: n.startPosition.row + 1,
           endLine: n.endPosition.row + 1,
@@ -824,6 +1007,7 @@ export class ASTParser {
   }
 
   private extractNameFromDefinition(text: string): string | null {
+    // JavaScript/TypeScript patterns
     const functionMatch = text.match(/(?:function|async\s+function)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/);
     if (functionMatch) return functionMatch[1];
 
@@ -832,6 +1016,13 @@ export class ASTParser {
 
     const constMatch = text.match(/(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/);
     if (constMatch) return constMatch[1];
+
+    // Python patterns
+    const pyFunctionMatch = text.match(/def\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+    if (pyFunctionMatch) return pyFunctionMatch[1];
+
+    const pyClassMatch = text.match(/class\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+    if (pyClassMatch) return pyClassMatch[1];
 
     return null;
   }
@@ -846,11 +1037,7 @@ export class ASTParser {
     if (hasDocstring && hasDocstring.length > 20) return true;
 
     // Always chunk if it's exported or part of a module interface
-    if (
-      signature.includes('export') ||
-      nameLower.includes('config') ||
-      nameLower.includes('setting')
-    ) {
+    if (signature.includes('export') || nameLower.includes('config') || nameLower.includes('setting')) {
       return true;
     }
 
@@ -859,33 +1046,11 @@ export class ASTParser {
 
     // Skip common local variable patterns that add little semantic value
     const skipPatterns = [
-      'temp',
-      'tmp',
-      'i',
-      'j',
-      'k',
-      'x',
-      'y',
-      'z',
-      'val',
-      'err',
-      'res',
-      'req',
-      'ctx',
-      'data',
-      'result',
-      'response',
-      'item',
-      'element',
-      'count',
-      'len',
-      'length',
-      'index',
-      'status',
-      'message',
-      'output',
-      'input',
-      'value',
+      'temp', 'tmp', 'i', 'j', 'k', 'x', 'y', 'z',
+      'val', 'err', 'res', 'req', 'ctx', 'data',
+      'result', 'response', 'item', 'element',
+      'count', 'len', 'length', 'index', 'status',
+      'message', 'output', 'input', 'value'
     ];
 
     if (skipPatterns.some(pattern => nameLower.includes(pattern))) {
@@ -903,22 +1068,9 @@ export class ASTParser {
     // If we get here, the variable might be worth chunking
     // Be more selective - only chunk variables that are clearly architectural
     const architecturalPatterns = [
-      'config',
-      'setting',
-      'manager',
-      'service',
-      'handler',
-      'helper',
-      'util',
-      'factory',
-      'builder',
-      'parser',
-      'store',
-      'state',
-      'cache',
-      'db',
-      'api',
-      'client',
+      'config', 'setting', 'manager', 'service', 'handler',
+      'helper', 'util', 'factory', 'builder', 'parser',
+      'store', 'state', 'cache', 'db', 'api', 'client'
     ];
 
     // Only chunk if it's clearly an architectural pattern AND not a simple local variable
@@ -926,18 +1078,8 @@ export class ASTParser {
 
     // Additional check: don't chunk if it looks like a simple local variable
     const simpleLocalPatterns = [
-      'temp',
-      'tmp',
-      'data',
-      'result',
-      'response',
-      'item',
-      'count',
-      'index',
-      'len',
-      'length',
-      'err',
-      'val',
+      'temp', 'tmp', 'data', 'result', 'response', 'item',
+      'count', 'index', 'len', 'length', 'err', 'val'
     ];
 
     const isSimpleLocal = simpleLocalPatterns.some(pattern => nameLower.includes(pattern));

@@ -16,23 +16,37 @@
 
 // Optional tree-sitter import to avoid hard native dependency at runtime
 let Parser: any = null;
-try {
-  Parser = require('tree-sitter');
-} catch {
-  Parser = null;
-}
+let TypeScript: any = null;
+let JavaScript: any = null;
+let Python: any = null;
 
-// We'll need to install these as dev dependencies if not already available
-let TypeScript: any;
-let JavaScript: any;
-let Python: any;
+// Dynamic import for ESM-only tree-sitter packages
+async function initializeTreeSitterParsers() {
+  try {
+    if (!Parser) {
+      Parser = await import('tree-sitter');
+      Parser = Parser.default || Parser;
+    }
 
-try {
-  TypeScript = require('tree-sitter-typescript').typescript;
-  JavaScript = require('tree-sitter-javascript');
-  Python = require('tree-sitter-python');
-} catch (error) {
-  console.warn('Some tree-sitter parsers not available:', error);
+    if (!TypeScript) {
+      const tsModule = await import('tree-sitter-typescript');
+      TypeScript = tsModule.default.typescript;
+    }
+
+    if (!JavaScript) {
+      const jsModule = await import('tree-sitter-javascript');
+      JavaScript = jsModule.default;
+    }
+
+    if (!Python) {
+      const pyModule = await import('tree-sitter-python');
+      Python = pyModule.default;
+    }
+
+    console.info('✅ Tree-sitter parsers initialized successfully');
+  } catch (error) {
+    console.warn('⚠️ Some tree-sitter parsers not available:', error);
+  }
 }
 
 export interface CodeChunk {
@@ -67,10 +81,14 @@ export class TreeSitterProcessor {
 
   constructor() {
     this.parsers = new Map();
-    this.initializeParsers();
   }
 
-  private initializeParsers(): void {
+  async initialize(): Promise<void> {
+    await initializeTreeSitterParsers();
+    await this.initializeParsers();
+  }
+
+  private async initializeParsers(): Promise<void> {
     if (!Parser) {
       console.warn('Tree-sitter parser not available, will use fallback parsing');
       return;

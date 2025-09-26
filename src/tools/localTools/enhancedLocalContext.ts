@@ -416,7 +416,7 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
     const miniBundle = await buildMiniBundle(jumpTargets, indices.files, request.maxTokens);
 
     // 8. Generate deterministic answer draft
-    const answerDraft = generateDeterministicAnswer(plan, request.taskType, jumpTargets, indices);
+    const answerDraft = await generateDeterministicAnswer(plan, request.taskType, jumpTargets, indices);
 
     // 9. Compute next actions
     const nextActions = computeNextActions(jumpTargets, request.taskType);
@@ -499,19 +499,17 @@ async function loadProjectIndices(projectPath: string, useCache: boolean): Promi
 
     if (useCache) {
       // Try to reuse existing enhanced project summary
-      const enhancedSummary = await buildEnhancedProjectSummary(
-        validatedProjectPath,
-        files.slice(0, 100)
-      );
+      const enhancedSummary = await buildEnhancedProjectSummary(validatedProjectPath, files.slice(0, 100));
 
       return {
         files,
         exports: enhancedSummary.surfaces.exports,
         // Extract import metadata from import graph keys for lightweight summaries
-        imports: (() => {
+        imports: await (async () => {
           try {
-            const { buildImportGraph } = require('./indexers');
-            const graph = buildImportGraph(files) as
+            // Using dynamic import for consistency and to avoid require() issues
+            const indexersModule = await import('./indexers');
+            const graph = await indexersModule.buildImportGraph(files) as
               | Map<string, string[]>
               | Record<string, string[]>;
             const entries: { file: string; imports: string[] }[] = [];
@@ -685,14 +683,15 @@ async function buildMiniBundle(
   return assembleMiniBundle(targets, files, maxTokens);
 }
 
-function generateDeterministicAnswer(
+async function generateDeterministicAnswer(
   plan: string,
   taskType: string,
   targets: JumpTarget[],
   indices: ProjectContext
-): string {
-  const { generateDeterministicAnswer: generateAnswer } = require('./answerDraftGenerator');
-  return generateAnswer(plan, taskType, targets, indices);
+): Promise<string> {
+  // Using dynamic import for consistency and to avoid require() issues
+  const answerModule = await import('./answerDraftGenerator');
+  return answerModule.generateDeterministicAnswer(plan, taskType, targets, indices);
 }
 
 function computeNextActions(targets: JumpTarget[], taskType: string): NextActions {

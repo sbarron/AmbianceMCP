@@ -23,6 +23,7 @@
     "src/local/**/*.ts",
     "src/utils/**/*.ts",
     "src/core/**/*.ts",
+    "src/shared/**/*.json",
     "tools/**/*.ts"
   ],
   "exclude": [

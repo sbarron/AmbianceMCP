@@ -140,8 +140,13 @@ export class LocalEmbeddingGenerator {
     logger.info('✅ Local embedding provider (transformers.js) available as default');
 
     // Initialize TreeSitter for intelligent chunking
+    this.initializeTreeSitter();
+  }
+
+  private async initializeTreeSitter(): Promise<void> {
     try {
       this.treeSitter = new TreeSitterProcessor();
+      await this.treeSitter.initialize();
       logger.debug('🌳 TreeSitter initialized for intelligent chunking');
     } catch (error) {
       logger.warn('⚠️ TreeSitter initialization failed - using simple chunking', {
@@ -601,16 +606,12 @@ export class LocalEmbeddingGenerator {
 
       const firstItem = response.data[0];
       if (!firstItem || !firstItem.embedding || !Array.isArray(firstItem.embedding)) {
-        throw new Error(
-          'Invalid OpenAI response: first item missing embedding or embedding is not an array'
-        );
+        throw new Error('Invalid OpenAI response: first item missing embedding or embedding is not an array');
       }
 
       return response.data.map((item: any) => {
         if (!item || !item.embedding || !Array.isArray(item.embedding)) {
-          throw new Error(
-            'Invalid OpenAI response: item missing embedding or embedding is not an array'
-          );
+          throw new Error('Invalid OpenAI response: item missing embedding or embedding is not an array');
         }
         return item.embedding;
       });
@@ -1566,8 +1567,7 @@ export class LocalEmbeddingGenerator {
     if (!storageEnabled) return false;
 
     // Check if any provider is explicitly enabled and available
-    const openaiEnabled =
-      process.env.OPENAI_API_KEY && process.env.USE_OPENAI_EMBEDDINGS === 'true';
+    const openaiEnabled = process.env.OPENAI_API_KEY && process.env.USE_OPENAI_EMBEDDINGS === 'true';
     const voyageAIEnabled = false; // VoyageAI is no longer supported
 
     const openaiReady = openaiEnabled && openaiService.isReady();

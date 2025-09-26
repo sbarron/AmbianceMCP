@@ -172,6 +172,26 @@ export async function handleFileSummary(args: any): Promise<any> {
     // Get semantic compactor results for comparison (but don't rely on them for symbol count)
     const nodes = await compactor.getSummary(resolvedFilePath);
 
+    // Debug: Log the AST analysis results
+    logger.debug('🔍 AST Analysis Results', {
+      filePath: resolvedFilePath,
+      totalSymbols: astAnalysis.totalSymbols,
+      functions: astAnalysis.allFunctions.length,
+      classes: astAnalysis.allClasses.length,
+      interfaces: astAnalysis.allInterfaces.length,
+      exportedSymbols: astAnalysis.exportedSymbols.length,
+      topSymbols: astAnalysis.topSymbols.length,
+      sampleFunctions: astAnalysis.allFunctions.slice(0, 3).map(f => ({ name: f.name, type: f.type, line: f.line })),
+      sampleClasses: astAnalysis.allClasses.slice(0, 3).map(c => ({ name: c.name, type: c.type, line: c.line })),
+    });
+
+    // Force use the actual AST analysis results instead of semantic compactor
+    logger.info('🔧 Using AST analysis results directly', {
+      symbolCount: astAnalysis.totalSymbols,
+      functions: astAnalysis.allFunctions.length,
+      classes: astAnalysis.allClasses.length,
+    });
+
     // Extract file header information
     const fileHeader = await extractFileHeader(resolvedFilePath);
 
@@ -441,7 +461,7 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
       if (symbol.isExported && !exportedSymbols.includes(symbol.name)) {
         exportedSymbols.push(symbol.name);
       }
-    }
+    } // Close the for loop
 
     // Add exports from export statements
     if (parsedFile.exports) {

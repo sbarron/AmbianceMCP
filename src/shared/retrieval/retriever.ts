@@ -57,18 +57,43 @@ export class SharedRetriever implements Retriever {
         ],
       });
 
-      // Return minimal fallback config
+      // Return minimal fallback config with basic facets for essential functionality
+      logger.warn('⚠️ Using fallback facet configuration - some features may be limited');
       return {
-        facets: {},
+        facets: {
+          // Essential fallback facets to maintain basic functionality
+          general: {
+            seeds: ['function', 'class', 'const', 'let', 'var', 'import', 'export'],
+            description: 'General code patterns and structures'
+          },
+          data: {
+            seeds: ['database', 'table', 'query', 'model', 'schema'],
+            description: 'Data operations and database interactions'
+          },
+          auth: {
+            seeds: ['auth', 'login', 'token', 'session', 'user'],
+            description: 'Authentication and user management'
+          }
+        },
         retrieval: {
-          perFacetCap: {},
+          perFacetCap: { general: 8, data: 4, auth: 3 },
           mmrLambda: 0.3,
           minSim: 0.18,
-          penalties: {},
+          penalties: {
+            'node_modules/': 0.1,
+            'dist/': 0.2,
+            'build/': 0.2,
+            '*.min.js': 0.3,
+            '*.map': 0.3
+          },
           maxRetries: 3,
           timeoutMs: 5000,
         },
-        anchors: {},
+        anchors: {
+          general: ['function', 'class', 'const'],
+          data: ['database', 'query'],
+          auth: ['auth', 'login']
+        },
       };
     }
   }

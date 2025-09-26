@@ -23,16 +23,36 @@ let TypeScriptLang: any = null;
 let JavaScriptLang: any = null;
 let PythonLang: any = null;
 
-try {
-  Parser = require('tree-sitter');
+// Dynamic import for ESM-only tree-sitter packages
+async function initializeTreeSitter() {
+  try {
+    if (!Parser) {
+      Parser = await import('tree-sitter');
+      Parser = Parser.default || Parser;
+    }
 
-  TypeScriptLang = require('tree-sitter-typescript').typescript;
+    if (!TypeScriptLang) {
+      const tsModule = await import('tree-sitter-typescript');
+      TypeScriptLang = tsModule.default.typescript;
+    }
 
-  JavaScriptLang = require('tree-sitter-javascript');
+    if (!JavaScriptLang) {
+      const jsModule = await import('tree-sitter-javascript');
+      JavaScriptLang = jsModule.default;
+    }
 
-  PythonLang = require('tree-sitter-python');
-} catch {
-  // If tree-sitter isn't available, the module will still load
+    if (!PythonLang) {
+      const pyModule = await import('tree-sitter-python');
+      PythonLang = pyModule.default;
+    }
+
+    logger.debug('✅ Tree-sitter parsers loaded successfully');
+  } catch (error) {
+    logger.warn('⚠️ Tree-sitter parsers not available, falling back to basic parsing', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // If tree-sitter isn't available, the module will still load with fallback parsing
+  }
 }
 
 // Initialize embedding services
@@ -234,6 +254,11 @@ function parseErrorLogs(logText: string): ParsedError[] {
  * Build an index of symbols in a file using tree-sitter.
  */
 async function buildSymbolIndex(filePath: string): Promise<SymbolInfo[]> {
+  // Initialize tree-sitter if not already done
+  if (!Parser) {
+    await initializeTreeSitter();
+  }
+
   if (!Parser) return [];
 
   const ext = path.extname(filePath).toLowerCase();

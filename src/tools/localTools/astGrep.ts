@@ -76,6 +76,7 @@ Unlike text-based search, this matches syntactical AST node structures.
 - 'export const $NAME = $VALUE' (exported constant)
 - 'import $NAME from "$MODULE"' (import statement)
 - 'new $CLASS($ARGS)' (constructor call)
+- 'class $NAME: $BODY' (Python class)
 - 'await $PROMISE' inside 'for ($COND) { $BODY }' (relational patterns)
 
 **Examples:**
@@ -87,6 +88,8 @@ Unlike text-based search, this matches syntactical AST node structures.
 - Find async functions: 'async function $NAME($ARGS) { $BODY }'
 - Find arrow functions: 'const $NAME = ($ARGS) => $BODY'
 - Find React components: 'export function $NAME($PROPS) { return $JSX }'
+- Find Python classes: 'class $NAME: $BODY'
+- Find Python classes with inheritance: 'class $NAME($BASE): $BODY'
 
 **Advanced Usage:**
 - Use $$$ for zero or more arguments: 'console.log($$$ARGS)'
@@ -203,6 +206,8 @@ export function validateAstGrepPattern(pattern: string): PatternValidationResult
         'import $NAME from "$MODULE"',
         'new $CLASS($ARGS)',
         'const $VAR = $VALUE',
+        'class $NAME: $BODY (Python)',
+        'class $NAME($BASE): $BODY (Python with inheritance)',
       ],
     };
   }
@@ -272,14 +277,15 @@ export function validateAstGrepPattern(pattern: string): PatternValidationResult
     };
   }
 
-  // Check for ambiguous patterns that ast-grep can't parse
-  const ambiguousPatterns = [
-    /^export\s+\$[A-Z_]+$/,
-    /^import\s+\$[A-Z_]+$/,
-    /^function\s+\$[A-Z_]+$/,
-    /^\$[A-Z_]+\s*$/,
-    /^export\s+default\s+\$[A-Z_]+$/,
-  ];
+    // Check for ambiguous patterns that ast-grep can't parse
+    const ambiguousPatterns = [
+      /^export\s+\$[A-Z_]+$/,
+      /^import\s+\$[A-Z_]+$/,
+      /^function\s+\$[A-Z_]+$/,
+      /^class\s+\$[A-Z_]+$/,
+      /^\$[A-Z_]+\s*$/,
+      /^export\s+default\s+\$[A-Z_]+$/,
+    ];
 
   for (const ambiguousPattern of ambiguousPatterns) {
     if (ambiguousPattern.test(trimmedPattern)) {
@@ -311,16 +317,16 @@ export function validateAstGrepPattern(pattern: string): PatternValidationResult
     }
   }
 
-  // Check for patterns missing metavariables when they should have them
-  const patternsNeedingMetavariables = [
-    {
-      regex: /^export\s+(const|let|var|function|class|interface|type)\s+[^$]/,
-      suggestion: 'Use metavariables like $NAME for the exported identifier',
-    },
-    { regex: /^function\s+[^$]/, suggestion: 'Use $NAME for the function name' },
-    { regex: /^class\s+[^$]/, suggestion: 'Use $NAME for the class name' },
-    { regex: /^import\s+[^$]/, suggestion: 'Use $NAME for the imported identifier' },
-  ];
+    // Check for patterns missing metavariables when they should have them
+    const patternsNeedingMetavariables = [
+      {
+        regex: /^export\s+(const|let|var|function|class|interface|type)\s+[^$]/,
+        suggestion: 'Use metavariables like $NAME for the exported identifier',
+      },
+      { regex: /^function\s+[^$]/, suggestion: 'Use $NAME for the function name' },
+      { regex: /^class\s+[^$]/, suggestion: 'Use $NAME for the class name and $BASE for inheritance' },
+      { regex: /^import\s+[^$]/, suggestion: 'Use $NAME for the imported identifier' },
+    ];
 
   const suggestions: string[] = [];
   for (const patternCheck of patternsNeedingMetavariables) {
@@ -451,6 +457,13 @@ export async function executeAstGrep(options: {
     const cliArgs: string[] = [];
 
     try {
+      logger.debug('Adding pattern to args', {
+        pattern: options.pattern,
+        patternType: typeof options.pattern,
+        patternLength: options.pattern.length,
+        patternTrimmed: options.pattern.trim(),
+      });
+
       cliArgs.push('--pattern', options.pattern);
 
       if (options.language) {
@@ -475,9 +488,16 @@ export async function executeAstGrep(options: {
 
       logger.debug('Executing ast-grep command', {
         command: 'npx ast-grep',
-        args: cliArgs.join(' '),
+        args: cliArgs,
+        argsJoined: cliArgs.join(' '),
         cwd: options.projectPath,
+        pattern: options.pattern,
+        language: options.language,
       });
+
+      // Log the command being executed
+      const fullCommand = `npx ast-grep ${cliArgs.join(' ')}`;
+      logger.debug('Executing ast-grep command:', { command: fullCommand });
 
       let astGrep: ReturnType<typeof spawn> | null = null;
       let executionMethod = 'unknown';
@@ -589,17 +609,16 @@ export async function executeAstGrep(options: {
       });
 
       astGrep.on('close', code => {
-        logger.info('ast-grep process closed', {
+        logger.debug('ast-grep process closed', {
           code,
           stdoutLength: stdout.length,
           stderrLength: stderr.length,
           executionMethod,
           success: code === 0,
-          stderr: stderr.substring(0, 500),
         });
 
         if (code !== 0 && code !== null) {
-          reject(new Error(`ast-grep exited with code ${code}: ${stderr}`));
+          reject(new Error(`ast-grep exited with code ${code}: ${stderr || 'No error message provided'}`));
           return;
         }
 
