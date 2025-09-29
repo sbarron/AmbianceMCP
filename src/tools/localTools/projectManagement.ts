@@ -13,7 +13,7 @@ import { LocalEmbeddingStorage } from '../../local/embeddingStorage';
 import { LocalProjectManager, LocalProject } from '../../local/projectManager';
 import * as fs from 'fs';
 import * as path from 'path';
-import { globby } from 'globby';
+// Dynamic import for globby (ES module)
 import { loadIgnorePatterns } from '../../local/projectIdentifier';
 
 interface IgnorePatterns {
@@ -201,6 +201,7 @@ async function analyzeProjectIndexableFiles(projectPath: string): Promise<{
     ];
 
     // Find all matching files (same as indexer)
+    const { globby } = await import('globby');
     const allFiles = await globby(includePatterns, {
       cwd: projectPath,
       ignore: allIgnorePatterns,

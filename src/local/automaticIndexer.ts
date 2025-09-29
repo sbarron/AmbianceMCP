@@ -18,7 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { globby } from 'globby';
+// Dynamic import for globby (ES module)
 import { TreeSitterProcessor } from './treeSitterProcessor';
 import { LocalProjectManager } from './projectManager';
 import { ProjectIdentifier, ProjectInfo } from './projectIdentifier';
@@ -764,6 +764,7 @@ export class AutomaticIndexer {
     });
 
     try {
+      const { globby } = await import('globby');
       let files = await globby(includePatterns, {
         cwd: projectPath,
         ignore: allIgnorePatterns,

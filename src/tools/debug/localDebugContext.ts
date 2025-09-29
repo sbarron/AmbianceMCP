@@ -10,7 +10,7 @@
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
-import { globby } from 'globby';
+// Dynamic import for globby (ES module)
 import { logger } from '../../utils/logger';
 import { validateAndResolvePath } from '../utils/pathUtils';
 import { LocalEmbeddingGenerator, GenerationOptions } from '../../local/embeddingGenerator';
@@ -681,6 +681,7 @@ export async function handleLocalDebugContext(args: any): Promise<DebugContextRe
       } else if (err.symbol) {
         symbols.push(err.symbol);
         if (!allFiles) {
+          const { globby } = await import('globby');
           allFiles = await globby(['**/*.{ts,tsx,js,jsx,py}'], {
             cwd: resolvedProjectPath,
             absolute: true,
