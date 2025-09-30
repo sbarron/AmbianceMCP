@@ -1,11 +1,11 @@
 {
   "name": "@jackjackstudios/ambiance-mcp",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "MCP server for code context with semantic search, AI analysis and summary",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "bin": {
-    "ambiance-mcp": "./dist/src/cli.js"
+    "ambiance-mcp": "dist/src/index.js"
   },
   "keywords": [
     "mcp",
@@ -36,7 +36,7 @@
     "build": "tsc --project tsconfig.json && npm run copy-facets-config",
     "clean": "rimraf dist",
     "prebuild": "npm run clean",
-    "copy-facets-config": "cp src/shared/retrieval/facets.config.json dist/src/shared/retrieval/",
+    "copy-facets-config": "node -e \"require('fs').copyFileSync('src/shared/retrieval/facets.config.json', 'dist/src/shared/retrieval/facets.config.json')\"",
     "lint": "eslint src/ scripts/ --ext .ts,.js",
     "lint:fix": "eslint src/ scripts/ --ext .ts,.js --fix",
     "format": "prettier --write \"src/**/*.{ts,js,json}\" \"tools/**/*.{ts,js,json}\" \"scripts/**/*.{ts,js,json}\" \"*.{json,md}\"",
