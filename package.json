@@ -1,11 +1,11 @@
 {
   "name": "@jackjackstudios/ambiance-mcp",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "MCP server for code context with semantic search, AI analysis and summary",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "bin": {
-    "ambiance-mcp": "dist/src/index.js"
+    "ambiance-mcp": "./dist/src/cli.js"
   },
   "keywords": [
     "mcp",

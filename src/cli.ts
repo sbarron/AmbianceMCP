@@ -125,7 +125,6 @@ async function startServer(): Promise<void> {
     process.exit(1);
   }
 }
-
 // Main CLI logic
 if (isHelp) {
   showHelp();
@@ -142,3 +141,4 @@ if (isHelp) {
   showHelp();
   process.exit(1);
 }
+

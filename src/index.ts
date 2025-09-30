@@ -167,9 +167,12 @@ class AmbianceMCPServer {
    * Apply fallback environment variables when mcp.json env vars aren't passed through by Cursor
    */
   private applyFallbackEnvironmentVariables(): void {
+    // Use intelligent workspace detection instead of hardcoded paths
+    const { detectWorkspaceDirectory } = require('./tools/utils/pathUtils');
+
     // Fallback environment variables (should match mcp.json configuration)
     const fallbacks = {
-      WORKSPACE_FOLDER: 'C:\\Dev\\ambiance-mcp',
+      WORKSPACE_FOLDER: detectWorkspaceDirectory(),
       USE_LOCAL_EMBEDDINGS: 'true',
       LOCAL_EMBEDDING_MODEL: 'all-MiniLM-L6-v2',
       OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
