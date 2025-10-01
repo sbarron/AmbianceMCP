@@ -12,6 +12,8 @@
  */
 
 import OpenAI from 'openai';
+import type { Response as ResponsesResponse } from 'openai/resources/responses/responses';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { logger } from '../utils/logger';
 import { validateDynamicSignal, Message, ValidationError } from './validation';
 
@@ -124,13 +126,28 @@ export class OpenAIService {
     };
 
     const tryTinyCompletion = async () => {
+      const probeModel = this.getModelForTask('mini');
       try {
-        await this.client.chat.completions.create({
-          model: this.getModelForTask('mini'),
-          messages: [{ role: 'system', content: 'ping' }],
-          max_tokens: 1,
-          temperature: 1,
-        } as any);
+        if (this.isReasoningModel(probeModel)) {
+          await this.client.responses.create({
+            model: probeModel,
+            input: [
+              {
+                role: 'user',
+                content: [{ type: 'input_text', text: 'ping' }],
+              },
+            ],
+            reasoning: { effort: 'low' },
+            max_output_tokens: 1,
+          });
+        } else {
+          await this.client.chat.completions.create({
+            model: probeModel,
+            messages: [{ role: 'system', content: 'ping' }],
+            max_tokens: 1,
+            temperature: 1,
+          } as any);
+        }
         return true;
       } catch {
         return false;
@@ -254,6 +271,16 @@ export class OpenAIService {
         disallowMaxTokens: true,
         enforceTemperature: 1,
       },
+      'gpt-4.1': {
+        maxTokensLimit: 128000,
+        supportsFunctions: true,
+        supportsTools: true,
+      },
+      'gpt-4.1-mini': {
+        maxTokensLimit: 128000,
+        supportsFunctions: true,
+        supportsTools: true,
+      },
       'gpt-4': { maxTokensLimit: 8192, supportsFunctions: true, supportsTools: true },
       'gpt-4o': { maxTokensLimit: 16384, supportsFunctions: true, supportsTools: true },
       'gpt-4o-mini': { maxTokensLimit: 16384, supportsFunctions: true, supportsTools: true },
@@ -287,6 +314,517 @@ export class OpenAIService {
     return (
       modelConfigs[model] || { maxTokensLimit: 4096, supportsFunctions: true, supportsTools: true }
     );
+  }
+
+  /**
+   * Detect whether a model should use the Responses API (reasoning models like GPT-5)
+   */
+  private isReasoningModel(model?: string): boolean {
+    if (!model) return false;
+    const normalized = model.toLowerCase();
+    return normalized.startsWith('gpt-5');
+  }
+
+  /**
+   * Normalize chat message content into Responses API content blocks
+   */
+  private normalizeResponseContent(
+    content: ChatCompletionMessageParam['content']
+  ): Array<Record<string, any>> {
+    if (content === null || content === undefined) {
+      return [{ type: 'input_text', text: '' }];
+    }
+
+    if (typeof content === 'string') {
+      return [{ type: 'input_text', text: content }];
+    }
+
+    if (Array.isArray(content)) {
+      const parts = content
+        .map((part) => {
+          if (typeof part === 'string') {
+            return { type: 'input_text', text: part };
+          }
+
+          if (part && typeof part === 'object') {
+            if ('type' in part) {
+              if ((part as any).type === 'input_text' && 'text' in part) {
+                return { type: 'input_text', text: (part as any).text ?? '' };
+              }
+              if ((part as any).type === 'text' && 'text' in part) {
+                return { type: 'input_text', text: (part as any).text ?? '' };
+              }
+              if (
+                ['input_text', 'input_image', 'input_file'].includes((part as any).type as string)
+              ) {
+                return { ...part };
+              }
+              return { type: 'input_text', text: JSON.stringify(part) };
+            }
+
+            if ('text' in part) {
+              return { type: 'input_text', text: (part as any).text ?? '' };
+            }
+
+            return { type: 'input_text', text: JSON.stringify(part) };
+          }
+
+          return null;
+        })
+        .filter(Boolean) as Array<Record<string, any>>;
+
+      return parts.length ? parts : [{ type: 'input_text', text: '' }];
+    }
+
+    if (content && typeof content === 'object') {
+      const block = content as Record<string, any>;
+      if ('type' in block) {
+        if (block.type === 'input_text') {
+          return [{ type: 'input_text', text: block.text ?? '' }];
+        }
+        if (block.type === 'text') {
+          return [{ type: 'input_text', text: block.text ?? '' }];
+        }
+        if (['input_text', 'input_image', 'input_file'].includes(block.type)) {
+          return [{ ...block }];
+        }
+        return [{ type: 'input_text', text: JSON.stringify(block) }];
+      }
+
+      if ('text' in block) {
+        return [{ type: 'input_text', text: block.text ?? '' }];
+      }
+
+      return [{ type: 'input_text', text: JSON.stringify(block) }];
+    }
+
+    return [{ type: 'input_text', text: String(content) }];
+  }
+
+  /**
+   * Convert Chat Completions message array into Responses API input format
+   */
+  private transformMessagesToResponseInput(
+    messages: ChatCompletionMessageParam[]
+  ): Array<Record<string, any>> {
+    return messages.map((message) => {
+      const converted: Record<string, any> = {
+        role: (message as any).role,
+        content: this.normalizeResponseContent(message.content ?? ''),
+      };
+
+      if ((message as any).name) {
+        converted.name = (message as any).name;
+      }
+
+      if ((message as any).tool_call_id) {
+        converted.tool_call_id = (message as any).tool_call_id;
+      }
+
+      if ((message as any).metadata) {
+        converted.metadata = (message as any).metadata;
+      }
+
+      if (!converted.content || converted.content.length === 0) {
+        converted.content = [{ type: 'input_text', text: '' }];
+      }
+
+      return converted;
+    });
+  }
+
+  /**
+   * Derive a reasoning effort value, preferring explicit settings and falling back to temperature
+   */
+  private resolveReasoningEffort(
+    params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming
+  ): 'low' | 'medium' | 'high' {
+    const explicit = (params as any).reasoning;
+    if (explicit && typeof explicit === 'object' && typeof explicit.effort === 'string') {
+      return explicit.effort as 'low' | 'medium' | 'high';
+    }
+
+    const temperature = typeof params.temperature === 'number' ? params.temperature : null;
+    if (temperature !== null) {
+      if (temperature <= 0.2) return 'low';
+      if (temperature >= 0.8) return 'high';
+    }
+
+    return 'medium';
+  }
+
+  /**
+   * Extract and cap max_output_tokens for reasoning models
+   */
+  private extractMaxOutputTokens(
+    params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+    modelConfig: ModelConfig
+  ): number | undefined {
+    const candidateValues = [
+      (params as any).max_output_tokens,
+      (params as any).max_completion_tokens,
+      params.max_tokens,
+    ];
+
+    const firstDefined = candidateValues.find(
+      (value) => typeof value === 'number' && Number.isFinite(value)
+    ) as number | undefined;
+
+    if (firstDefined === undefined) {
+      return undefined;
+    }
+
+    const capped = Math.min(firstDefined, modelConfig.maxTokensLimit);
+    if (capped !== firstDefined) {
+      logger.warn(
+        `max_output_tokens (${firstDefined}) exceeds model limit (${modelConfig.maxTokensLimit}), capping value`
+      );
+    }
+
+    return capped;
+  }
+
+  /**
+   * Convert a Responses API result into a Chat Completions-compatible payload
+   */
+  private adaptResponseToChatCompletion(
+    response: ResponsesResponse
+  ): OpenAI.Chat.Completions.ChatCompletion {
+    const textSegments: string[] = [];
+
+    const outputItems = Array.isArray((response as any).output)
+      ? ((response as any).output as Array<Record<string, any>>)
+      : [];
+
+    for (const item of outputItems) {
+      if (!item || typeof item !== 'object') continue;
+      if (item.type !== 'message') continue;
+
+      const contentBlocks = Array.isArray(item.content) ? item.content : [];
+      for (const block of contentBlocks) {
+        if (block && typeof block === 'object' && 'text' in block) {
+          const textValue = (block as any).text;
+          if (typeof textValue === 'string') {
+            textSegments.push(textValue);
+          }
+        } else if (typeof block === 'string') {
+          textSegments.push(block);
+        }
+      }
+    }
+
+    const aggregatedText = typeof (response as any).output_text === 'string'
+      ? (response as any).output_text
+      : textSegments.join('');
+
+    const responseStatus = (response as any).status;
+    const incompleteReason = (response as any).incomplete_details?.reason;
+
+    const originalFinishReason =
+      outputItems.find((item) => item?.stop_reason)?.stop_reason ||
+      outputItems.find((item) => item?.finish_reason)?.finish_reason ||
+      null;
+
+    let finishReason = originalFinishReason || 'stop';
+    let truncated = false;
+
+    if (incompleteReason === 'max_output_tokens') {
+      truncated = true;
+      finishReason = 'length';
+    } else if (incompleteReason === 'content_filter') {
+      finishReason = 'content_filter';
+    } else if (finishReason === 'max_output_tokens') {
+      truncated = true;
+      finishReason = 'length';
+    } else if (finishReason === 'length') {
+      truncated = true;
+    }
+
+    if (responseStatus === 'incomplete' && !truncated && finishReason === 'stop') {
+      truncated = true;
+      finishReason = 'length';
+    }
+
+    if (truncated) {
+      logger.warn('Reasoning response truncated', {
+        model: response.model,
+        status: responseStatus,
+        incompleteReason,
+        originalFinishReason,
+      });
+    } else if (incompleteReason === 'content_filter') {
+      logger.warn('Reasoning response blocked by content filter', {
+        model: response.model,
+        status: responseStatus,
+      });
+    }
+
+    const promptTokens =
+      (response as any).usage?.prompt_tokens ?? (response as any).usage?.input_tokens ?? 0;
+    const completionTokens =
+      (response as any).usage?.completion_tokens ?? (response as any).usage?.output_tokens ?? 0;
+    const totalTokens =
+      (response as any).usage?.total_tokens ?? (promptTokens || 0) + (completionTokens || 0);
+
+    const completion: OpenAI.Chat.Completions.ChatCompletion = {
+      id: response.id,
+      object: 'chat.completion',
+      created: (response as any).created ?? Math.floor(Date.now() / 1000),
+      model: response.model,
+      choices: [
+        {
+          index: 0,
+          finish_reason: finishReason || 'stop',
+          logprobs: null,
+          message: {
+            role: 'assistant',
+            content: aggregatedText,
+            refusal: null,
+          },
+        },
+      ],
+      usage:
+        (response as any).usage
+          ? {
+              prompt_tokens: promptTokens,
+              completion_tokens: completionTokens,
+              total_tokens: totalTokens,
+            }
+          : undefined,
+    };
+
+    (completion as any).response_metadata = {
+      status: responseStatus ?? 'completed',
+      incomplete_reason: incompleteReason ?? null,
+      original_finish_reason: originalFinishReason,
+      truncated,
+    };
+
+    return completion;
+  }
+
+  /**
+   * Handle GPT-5 style reasoning models via the Responses API while returning a chat-like payload
+   */
+  private async createReasoningCompletion(
+    params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming
+  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+    const targetModel = params.model || this.getModelForTask('base');
+    const runtimeModelConfig = this.getModelConfig(targetModel);
+
+    let maxOutputTokens = this.extractMaxOutputTokens(params, runtimeModelConfig);
+    const initialMaxOutputTokens = maxOutputTokens;
+
+    if (typeof params.temperature === 'number') {
+      logger.info('Reasoning models ignore temperature; using reasoning.effort instead', {
+        model: targetModel,
+        providedTemperature: params.temperature,
+      });
+    }
+
+    const initialReasoningEffort = this.resolveReasoningEffort(params);
+    let reasoningEffort: 'low' | 'medium' | 'high' = initialReasoningEffort;
+
+    const baseMessages = this.transformMessagesToResponseInput(
+      (params.messages as ChatCompletionMessageParam[]) || []
+    );
+    const baseMessagesJson = JSON.stringify(baseMessages);
+
+    const baseToolsJson = (params as any).tools ? JSON.stringify((params as any).tools) : null;
+    const baseToolChoiceJson = (params as any).tool_choice
+      ? JSON.stringify((params as any).tool_choice)
+      : null;
+
+    const baseReasoning =
+      (params as any).reasoning && typeof (params as any).reasoning === 'object'
+        ? { ...(params as any).reasoning }
+        : {};
+
+    const passthroughKeys: Array<keyof typeof params> = ['metadata', 'response_format', 'user'];
+    const passthroughJson: Record<string, string> = {};
+    for (const key of passthroughKeys) {
+      const value = (params as any)[key];
+      if (value !== undefined) {
+        passthroughJson[key] = JSON.stringify(value);
+      }
+    }
+
+    const buildRequest = (): Record<string, any> => {
+      const request: Record<string, any> = {
+        model: targetModel,
+        input: JSON.parse(baseMessagesJson),
+        reasoning: {
+          ...baseReasoning,
+          effort: reasoningEffort,
+        },
+      };
+
+      if (maxOutputTokens !== undefined) {
+        request.max_output_tokens = maxOutputTokens;
+      }
+
+      for (const key of passthroughKeys) {
+        if (passthroughJson[key]) {
+          request[key] = JSON.parse(passthroughJson[key]);
+        }
+      }
+
+      if (baseToolsJson) {
+        request.tools = JSON.parse(baseToolsJson);
+      }
+
+      if (baseToolChoiceJson) {
+        request.tool_choice = JSON.parse(baseToolChoiceJson);
+      }
+
+      return request;
+    };
+
+    const maxAttempts = 3;
+    let attempt = 0;
+    let response: ResponsesResponse | null = null;
+    let lastStatus: string | undefined;
+    let lastIncompleteReason: string | undefined;
+    let lastRequestMaxOutputTokens: number | undefined;
+    let lastRequestReasoningEffort: 'low' | 'medium' | 'high' = reasoningEffort;
+    const adjustments = {
+      increasedMaxOutputTokens: false,
+      loweredReasoningEffort: false,
+    };
+
+    const fallbackBaseMax = Math.min(4096, runtimeModelConfig.maxTokensLimit);
+
+    try {
+      while (attempt < maxAttempts) {
+        attempt += 1;
+        const request = buildRequest();
+        lastRequestMaxOutputTokens = request.max_output_tokens;
+        lastRequestReasoningEffort = request.reasoning?.effort as 'low' | 'medium' | 'high';
+
+        logger.info('Creating reasoning response via Responses API', {
+          model: targetModel,
+          attempt,
+          maxOutputTokens: request.max_output_tokens,
+          reasoningEffort: request.reasoning?.effort,
+        });
+
+        response = await this.client.responses.create(request);
+
+        lastStatus = (response as any).status;
+        lastIncompleteReason = (response as any).incomplete_details?.reason;
+
+        const truncatedByTokens =
+          lastStatus === 'incomplete' && lastIncompleteReason === 'max_output_tokens';
+
+        if (truncatedByTokens) {
+          logger.warn('Reasoning response truncated by max_output_tokens', {
+            model: targetModel,
+            attempt,
+            requestedMaxOutputTokens: request.max_output_tokens,
+            reasoningEffort: request.reasoning?.effort,
+          });
+
+          if (!adjustments.increasedMaxOutputTokens) {
+            const current = maxOutputTokens ?? 0;
+            const candidateBase = current === 0 ? fallbackBaseMax : current;
+            const boosted = Math.min(
+              runtimeModelConfig.maxTokensLimit,
+              Math.max(candidateBase + 512, Math.ceil(candidateBase * 1.5))
+            );
+
+            if (boosted > candidateBase) {
+              maxOutputTokens = boosted;
+              adjustments.increasedMaxOutputTokens = true;
+              logger.info('Retrying reasoning response with increased max_output_tokens', {
+                model: targetModel,
+                newMaxOutputTokens: maxOutputTokens,
+              });
+              continue;
+            }
+          }
+
+          if (!adjustments.loweredReasoningEffort && reasoningEffort !== 'low') {
+            const nextEffort = reasoningEffort === 'high' ? 'medium' : 'low';
+            reasoningEffort = nextEffort;
+            adjustments.loweredReasoningEffort = true;
+            logger.info('Retrying reasoning response with reduced reasoning effort', {
+              model: targetModel,
+              reasoningEffort,
+            });
+            continue;
+          }
+        }
+
+        // Either successful or cannot adjust further
+        break;
+      }
+
+      if (!response) {
+        throw new Error('Failed to obtain response from reasoning model');
+      }
+
+      logger.info('Reasoning response received', {
+        model: targetModel,
+        status: (response as any).status,
+        usage: (response as any).usage,
+        attempts: attempt,
+      });
+
+      const completion = this.adaptResponseToChatCompletion(response);
+      const metadata = ((completion as any).response_metadata ?? {}) as Record<string, any>;
+
+      metadata.attempts = attempt;
+      metadata.initial_max_output_tokens = initialMaxOutputTokens ?? null;
+      metadata.used_max_output_tokens = lastRequestMaxOutputTokens ?? null;
+      metadata.initial_reasoning_effort = initialReasoningEffort;
+      metadata.reasoning_effort = lastRequestReasoningEffort;
+      metadata.adjustments = {
+        increased_max_output_tokens: adjustments.increasedMaxOutputTokens,
+        lowered_reasoning_effort: adjustments.loweredReasoningEffort,
+      };
+
+      const truncatedResult =
+        metadata.truncated === true && lastIncompleteReason === 'max_output_tokens';
+
+      if (truncatedResult) {
+        metadata.need_more_budget = true;
+        metadata.partial_response =
+          completion.choices?.[0]?.message?.content ?? '';
+
+        if (lastRequestMaxOutputTokens && lastRequestMaxOutputTokens < runtimeModelConfig.maxTokensLimit) {
+          const suggested = Math.min(
+            runtimeModelConfig.maxTokensLimit,
+            Math.max(
+              lastRequestMaxOutputTokens + 512,
+              Math.ceil(lastRequestMaxOutputTokens * 1.5)
+            )
+          );
+          metadata.suggested_max_output_tokens = suggested;
+        }
+
+        if (lastRequestReasoningEffort !== 'low') {
+          metadata.suggested_reasoning_effort =
+            lastRequestReasoningEffort === 'high' ? 'medium' : 'low';
+        }
+
+        logger.warn('Reasoning response requires additional token budget', {
+          model: targetModel,
+          status: lastStatus,
+          incompleteReason: lastIncompleteReason,
+          attempts: attempt,
+        });
+      }
+
+      (completion as any).response_metadata = metadata;
+
+      return completion;
+    } catch (error) {
+      logger.error('Reasoning response failed', {
+        model: targetModel,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
   /**
@@ -364,23 +902,19 @@ export class OpenAIService {
   async createChatCompletion(
     params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming
   ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+    const targetModel = params.model || this.getModelForTask('base');
+    const paramsWithModel = {
+      ...params,
+      model: targetModel,
+    } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
+    const wantsReasoningModel = this.isReasoningModel(targetModel);
+
     try {
-      // Normalize parameters for the provider
-      const normalizedParams = this.normalizeParameters(params);
-
-      logger.info('Creating chat completion', {
-        provider: this.providerConfig.name,
-        model: normalizedParams.model,
-        messagesCount: normalizedParams.messages.length,
-        maxTokens: normalizedParams.max_tokens,
-        temperature: normalizedParams.temperature,
-      });
-
       // Validate context before making API call
       try {
-        validateDynamicSignal(normalizedParams.messages as Message[]);
+        validateDynamicSignal(paramsWithModel.messages as Message[]);
         logger.debug('✅ Context validation passed', {
-          messageCount: normalizedParams.messages.length,
+          messageCount: paramsWithModel.messages.length,
           provider: this.providerConfig.name,
         });
       } catch (validationError) {
@@ -392,13 +926,31 @@ export class OpenAIService {
             suggestion: validationError.structured.suggestion,
           });
 
-          // Return a structured error response instead of throwing
           throw new Error(
             `INSUFFICIENT_CONTEXT: ${validationError.message}. ${validationError.structured.suggestion || ''}`
           );
         }
         throw validationError;
       }
+
+      if (wantsReasoningModel) {
+        logger.info('Routing reasoning-capable model through Responses API', {
+          provider: this.providerConfig.name,
+          model: targetModel,
+        });
+        return await this.createReasoningCompletion(paramsWithModel);
+      }
+
+      // Normalize parameters for the provider
+      const normalizedParams = this.normalizeParameters(paramsWithModel);
+
+      logger.info('Creating chat completion', {
+        provider: this.providerConfig.name,
+        model: normalizedParams.model,
+        messagesCount: normalizedParams.messages.length,
+        maxTokens: normalizedParams.max_tokens,
+        temperature: normalizedParams.temperature,
+      });
 
       // Make the API call
       const response = await this.client.chat.completions.create(normalizedParams);
@@ -409,11 +961,44 @@ export class OpenAIService {
         usage: 'usage' in response ? response.usage : undefined,
       });
 
+      const truncatedChoices = response.choices.filter((choice) => choice.finish_reason === 'length');
+
+      if (truncatedChoices.length > 0) {
+        const usedMaxTokens = (normalizedParams as any).max_tokens ?? null;
+        const modelConfig = this.getModelConfig(normalizedParams.model);
+        const suggestedMaxTokens =
+          usedMaxTokens && modelConfig?.maxTokensLimit
+            ? Math.min(
+                modelConfig.maxTokensLimit,
+                Math.max(usedMaxTokens + 512, Math.ceil(usedMaxTokens * 1.5))
+              )
+            : null;
+
+        logger.warn('Chat completion truncated by max_tokens', {
+          provider: this.providerConfig.name,
+          model: normalizedParams.model,
+          usedMaxTokens,
+          suggestedMaxTokens,
+        });
+
+        const metadata = ((response as any).response_metadata ?? {}) as Record<string, any>;
+        metadata.status = metadata.status ?? 'completed';
+        metadata.truncated = true;
+        metadata.incomplete_reason = 'max_tokens';
+        metadata.original_finish_reasons = response.choices.map((choice) => choice.finish_reason);
+        metadata.need_more_budget = true;
+        metadata.partial_response = response.choices[0]?.message?.content ?? '';
+        metadata.used_max_tokens = usedMaxTokens;
+        metadata.suggested_max_tokens = suggestedMaxTokens;
+
+        (response as any).response_metadata = metadata;
+      }
+
       return response;
     } catch (error) {
       logger.error('Chat completion failed', {
         provider: this.providerConfig.name,
-        model: params.model,
+        model: targetModel,
         error: error instanceof Error ? error.message : String(error),
       });
 
@@ -427,24 +1012,36 @@ export class OpenAIService {
   async createChatCompletionStream(
     params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming
   ): Promise<AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>> {
-    try {
-      // Normalize parameters for the provider (streaming version)
-      const normalizedParams = {
-        ...params,
-        stream: true,
-      } as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
+    const targetModel = params.model || this.getModelForTask('base');
+    const paramsWithModel = {
+      ...params,
+      model: targetModel,
+      stream: true,
+    } as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
+    const wantsReasoningModel = this.isReasoningModel(targetModel);
 
-      logger.info('Creating streaming chat completion', {
-        provider: this.providerConfig.name,
-        model: normalizedParams.model,
-        messagesCount: normalizedParams.messages.length,
-      });
+    try {
+      if (wantsReasoningModel) {
+        logger.info(
+          'Routing reasoning-capable model through Responses API (stream fallback)',
+          {
+            provider: this.providerConfig.name,
+            model: targetModel,
+          }
+        );
+      } else {
+        logger.info('Creating streaming chat completion', {
+          provider: this.providerConfig.name,
+          model: paramsWithModel.model,
+          messagesCount: paramsWithModel.messages.length,
+        });
+      }
 
       // Validate context before making streaming API call
       try {
-        validateDynamicSignal(normalizedParams.messages as Message[]);
+        validateDynamicSignal(paramsWithModel.messages as Message[]);
         logger.debug('✅ Streaming context validation passed', {
-          messageCount: normalizedParams.messages.length,
+          messageCount: paramsWithModel.messages.length,
           provider: this.providerConfig.name,
         });
       } catch (validationError) {
@@ -460,15 +1057,44 @@ export class OpenAIService {
             `INSUFFICIENT_CONTEXT: ${validationError.message}. ${validationError.structured.suggestion || ''}`
           );
         }
-        throw validationError;
+          throw validationError;
       }
 
-      // Make the streaming API call
-      return await this.client.chat.completions.create(normalizedParams);
+      if (wantsReasoningModel) {
+        const nonStreamingParams = {
+          ...paramsWithModel,
+          stream: false,
+        } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
+
+        const completion = await this.createReasoningCompletion(nonStreamingParams);
+
+        async function* singleChunkStream(): AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk> {
+          for (const choice of completion.choices) {
+            yield {
+              id: `${completion.id}-chunk-${choice.index}`,
+              object: 'chat.completion.chunk',
+              created: completion.created,
+              model: completion.model,
+              choices: [
+                {
+                  index: choice.index,
+                  delta: choice.message,
+                  finish_reason: choice.finish_reason,
+                },
+              ],
+            } as OpenAI.Chat.Completions.ChatCompletionChunk;
+          }
+        }
+
+        return singleChunkStream();
+      }
+
+      // Make the streaming API call for standard chat models
+      return await this.client.chat.completions.create(paramsWithModel);
     } catch (error) {
       logger.error('Streaming chat completion failed', {
         provider: this.providerConfig.name,
-        model: params.model,
+        model: targetModel,
         error: error instanceof Error ? error.message : String(error),
       });
 

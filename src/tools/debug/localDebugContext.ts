@@ -10,7 +10,7 @@
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
-// Dynamic import for globby (ES module)
+import { globby } from 'globby';
 import { logger } from '../../utils/logger';
 import { validateAndResolvePath } from '../utils/pathUtils';
 import { LocalEmbeddingGenerator, GenerationOptions } from '../../local/embeddingGenerator';
@@ -46,7 +46,7 @@ async function initializeTreeSitter() {
       PythonLang = pyModule.default;
     }
 
-    logger.debug('✅ Tree-sitter parsers loaded successfully');
+    logger.info('✅ Tree-sitter parsers loaded successfully');
   } catch (error) {
     logger.warn('⚠️ Tree-sitter parsers not available, falling back to basic parsing', {
       error: error instanceof Error ? error.message : String(error),
@@ -681,7 +681,6 @@ export async function handleLocalDebugContext(args: any): Promise<DebugContextRe
       } else if (err.symbol) {
         symbols.push(err.symbol);
         if (!allFiles) {
-          const { globby } = await import('globby');
           allFiles = await globby(['**/*.{ts,tsx,js,jsx,py}'], {
             cwd: resolvedProjectPath,
             absolute: true,

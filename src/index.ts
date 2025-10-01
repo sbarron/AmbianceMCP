@@ -47,6 +47,9 @@ import { openaiService } from './core/openaiService';
 import { apiClient } from './client/apiClient';
 import { initializeAutoIndexing } from './startup/autoIndexingStartup';
 
+// Get package version for logging
+const packageJson = require('../../package.json');
+
 // MCP Server implementation using official SDK
 class AmbianceMCPServer {
   private static instance: AmbianceMCPServer | null = null;
@@ -146,7 +149,7 @@ class AmbianceMCPServer {
     this.server = new Server(
       {
         name: 'ambiance-mcp',
-        version: '1.0.0',
+        version: packageJson.version,
       },
       {
         capabilities: {
@@ -246,7 +249,7 @@ class AmbianceMCPServer {
       );
     }
 
-    logger.info('🚀 Initializing Ambiance MCP Server with SDK v1.17.3');
+    logger.info(`🚀 Initializing Ambiance MCP Server v${packageJson.version} with SDK v1.17.3`);
     logger.info(`📦 Loaded ${this.tools.length} tools: ${this.tools.map(t => t.name).join(', ')}`);
 
     // Log path configuration for debugging

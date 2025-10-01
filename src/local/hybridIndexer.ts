@@ -415,9 +415,7 @@ export class HybridIndexer {
         });
         files.push(...matches);
       } catch (error) {
-        logger.warn(`Failed to process pattern ${pattern}:`, {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        logger.warn(`Failed to process pattern ${pattern}:`, { error: error instanceof Error ? error.message : String(error) });
       }
     }
 
@@ -464,9 +462,7 @@ export class HybridIndexer {
 
       return [...changedFiles, ...untrackedFiles].map(file => path.join(project.path, file));
     } catch (error) {
-      logger.warn('Failed to get git changes, processing all files:', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logger.warn('Failed to get git changes, processing all files:', { error: error instanceof Error ? error.message : String(error) });
       return await this.discoverFiles(project.path);
     }
   }
@@ -591,9 +587,7 @@ export class HybridIndexer {
         const relativePath = path.relative(project.path, filePath);
         fileHashes.set(relativePath, hash);
       } catch (error) {
-        logger.warn(`Failed to hash file ${filePath}:`, {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        logger.warn(`Failed to hash file ${filePath}:`, { error: error instanceof Error ? error.message : String(error) });
       }
     }
 

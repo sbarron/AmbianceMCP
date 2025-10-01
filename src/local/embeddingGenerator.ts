@@ -97,6 +97,10 @@ export class LocalEmbeddingGenerator {
   private embeddingModel: string;
   private ambianceApiKey?: string;
 
+  // Cache for provider selection to avoid repetitive logging
+  private providerCache: { provider: string; timestamp: number } | null = null;
+  private readonly PROVIDER_CACHE_TTL = 5000; // 5 seconds
+
   // Provider failure tracking (resets on restart)
   private static providerFailures: Map<string, { count: number; lastFailure: Date }> = new Map();
   private static readonly MAX_FAILURES = 3;
@@ -119,6 +123,9 @@ export class LocalEmbeddingGenerator {
     // Initialize providers based on explicit user preferences
     const openaiEnabled = process.env.USE_OPENAI_EMBEDDINGS === 'true';
     const voyageAIEnabled = false; // VoyageAI is no longer supported
+
+    // Clear provider cache on initialization
+    this.providerCache = null;
 
     // Initialize OpenAI client if explicitly enabled and API key is available
     if (openaiEnabled && openaiService.isReady()) {
@@ -451,6 +458,24 @@ export class LocalEmbeddingGenerator {
     // Chunk the content
     const chunks = await this.chunkContent(content, filePath, options);
 
+    // Debug chunking for Python files specifically
+    if (language === 'python') {
+      logger.debug('🐍 Python file chunking results', {
+        filePath,
+        contentLength: content.length,
+        chunkCount: chunks.length,
+        chunks: chunks.map(chunk => ({
+          index: chunk.index,
+          startLine: chunk.startLine,
+          endLine: chunk.endLine,
+          contentLength: chunk.content.length,
+          contentPreview: chunk.content.substring(0, 100) + (chunk.content.length > 100 ? '...' : ''),
+          type: chunk.type,
+          symbols: chunk.symbols,
+        })),
+      });
+    }
+
     const fileProgress: GenerationProgress = {
       totalFiles: 1,
       processedFiles: 0,
@@ -472,6 +497,21 @@ export class LocalEmbeddingGenerator {
     }
 
     try {
+      // Debug batch generation for Python files
+      if (language === 'python') {
+        logger.debug('🐍 Python file batch generation', {
+          filePath,
+          batchCount: batches.length,
+          batchSizes: batches.map(batch => batch.length),
+          batchPreviews: batches.map(batch => batch.map(text => text.substring(0, 50) + (text.length > 50 ? '...' : ''))),
+          options: {
+            parallelMode: options.parallelMode,
+            maxConcurrency: options.maxConcurrency,
+            batchSize: options.batchSize,
+          },
+        });
+      }
+
       // Generate embeddings for all batches (parallel or sequential)
       const batchResults = await this.generateBatchesEmbeddings(batches, options);
 
@@ -485,7 +525,20 @@ export class LocalEmbeddingGenerator {
           const chunk = batch[j];
           const embedding = batchEmbeddings[j];
 
-          // Determine embedding metadata based on current provider
+          // Debug embedding results for Python files
+        if (language === 'python') {
+          logger.debug('🐍 Python file embedding result', {
+            filePath,
+            chunkIndex: chunk.index,
+            embeddingLength: embedding.length,
+            embeddingType: typeof embedding,
+            embeddingSample: embedding.slice(0, 5),
+            currentProvider: this.getCurrentProvider(),
+            embeddingMetadata: this.getEmbeddingMetadata(this.getCurrentProvider(), embedding),
+          });
+        }
+
+        // Determine embedding metadata based on current provider
           const currentProvider = this.getCurrentProvider();
           const embeddingMetadata = this.getEmbeddingMetadata(currentProvider, embedding);
 
@@ -1214,7 +1267,31 @@ export class LocalEmbeddingGenerator {
   /**
    * Get the current active provider name
    */
-  private getCurrentProvider(): string {
+  public getCurrentProvider(): string {
+    // Check cache first
+    if (this.providerCache) {
+      const now = Date.now();
+      if (now - this.providerCache.timestamp < this.PROVIDER_CACHE_TTL) {
+        return this.providerCache.provider;
+      }
+    }
+
+    // Cache miss or expired - compute provider selection
+    const provider = this.computeCurrentProvider();
+
+    // Update cache
+    this.providerCache = {
+      provider,
+      timestamp: Date.now()
+    };
+
+    return provider;
+  }
+
+  /**
+   * Compute the current provider selection (without caching)
+   */
+  private computeCurrentProvider(): string {
     // Default to local opensource models (transformers.js)
     logger.info('🔧 Provider selection debug', {
       hasAmbianceApiKey: !!this.ambianceApiKey,
@@ -1241,7 +1318,14 @@ export class LocalEmbeddingGenerator {
     return 'local';
   }
 
-  private getCurrentDimensions(): number {
+  /**
+   * Get the current embedding model name for the local provider
+   */
+  private getCurrentEmbeddingModel(): string {
+    return this.localProvider?.getModelInfo().name || process.env.LOCAL_EMBEDDING_MODEL || 'all-MiniLM-L6-v2';
+  }
+
+  public getCurrentDimensions(): number {
     // Return expected dimensions for current provider
     const provider = this.getCurrentProvider();
     switch (provider) {
@@ -1530,7 +1614,11 @@ export class LocalEmbeddingGenerator {
       }
 
       // Validate embedding compatibility and auto-fix if needed
-      const compatibility = await this.storage.validateEmbeddingCompatibility(projectId);
+      const compatibility = await this.storage.validateEmbeddingCompatibility(
+        projectId,
+        changeResult.currentModel.currentProvider,
+        changeResult.currentModel.currentDimensions
+      );
       if (!compatibility.compatible) {
         logger.warn(
           '🚨 Embedding compatibility issues detected - auto-clearing incompatible data',

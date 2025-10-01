@@ -58,7 +58,7 @@ export class MockApiServer {
       }
 
       const { texts, input_type, model } = req.body;
-      const dimensions = model === 'voyage-context-3' ? 1024 : 768;
+      const dimensions = model === (process.env.VOYAGEAI_MODEL || 'voyageai-model') ? 1024 : 768;
 
       // Generate mock embeddings
       const embeddings = texts.map(() =>
@@ -67,7 +67,7 @@ export class MockApiServer {
 
       res.json({
         embeddings,
-        model: model || 'voyage-context-3',
+        model: model || process.env.VOYAGEAI_MODEL || 'voyageai-model',
         dimensions,
         input_type: input_type || 'document',
         encoding_format: 'float32',

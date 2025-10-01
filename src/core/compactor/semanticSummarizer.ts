@@ -15,6 +15,7 @@
  * @context: Provides intelligent summarization that extracts semantic meaning from code structures, enabling better understanding of code purpose, complexity, and architectural patterns
  */
 
+
 import { PrunedSymbol, PrunedFile, Relationship } from './astPruner';
 
 export interface SymbolSummary {

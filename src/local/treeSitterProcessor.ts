@@ -14,6 +14,8 @@
  * @context: Provides robust AST parsing with graceful fallback to basic parsing when tree-sitter dependencies are unavailable, supporting multiple programming languages
  */
 
+import { logger } from '../utils/logger';
+
 // Optional tree-sitter import to avoid hard native dependency at runtime
 let Parser: any = null;
 let TypeScript: any = null;
@@ -22,6 +24,7 @@ let Python: any = null;
 
 // Dynamic import for ESM-only tree-sitter packages
 async function initializeTreeSitterParsers() {
+
   try {
     if (!Parser) {
       Parser = await import('tree-sitter');
@@ -43,9 +46,11 @@ async function initializeTreeSitterParsers() {
       Python = pyModule.default;
     }
 
-    console.info('✅ Tree-sitter parsers initialized successfully');
+    logger.info('✅ Tree-sitter parsers initialized successfully');
   } catch (error) {
-    console.warn('⚠️ Some tree-sitter parsers not available:', error);
+    logger.warn('⚠️ Some tree-sitter parsers not available:', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -90,7 +95,7 @@ export class TreeSitterProcessor {
 
   private async initializeParsers(): Promise<void> {
     if (!Parser) {
-      console.warn('Tree-sitter parser not available, will use fallback parsing');
+      logger.warn('Tree-sitter parser not available, will use fallback parsing');
       return;
     }
 
@@ -101,7 +106,9 @@ export class TreeSitterProcessor {
           tsParser.setLanguage(TypeScript);
           this.parsers.set('typescript', tsParser);
         } catch (error) {
-          console.warn('Failed to initialize TypeScript parser:', error);
+          logger.warn('Failed to initialize TypeScript parser:', {
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
 
@@ -111,7 +118,9 @@ export class TreeSitterProcessor {
           jsParser.setLanguage(JavaScript);
           this.parsers.set('javascript', jsParser);
         } catch (error) {
-          console.warn('Failed to initialize JavaScript parser:', error);
+          logger.warn('Failed to initialize JavaScript parser:', {
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
 
@@ -121,11 +130,15 @@ export class TreeSitterProcessor {
           pyParser.setLanguage(Python);
           this.parsers.set('python', pyParser);
         } catch (error) {
-          console.warn('Failed to initialize Python parser:', error);
+          logger.warn('Failed to initialize Python parser:', {
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
     } catch (error) {
-      console.warn('Failed to initialize some tree-sitter parsers:', error);
+      logger.warn('Failed to initialize some tree-sitter parsers:', {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -140,20 +153,20 @@ export class TreeSitterProcessor {
   }> {
     // Validate input parameters
     if (!content || typeof content !== 'string') {
-      console.warn(`Invalid content for parsing ${filePath}, using fallback`);
+      logger.warn('Invalid content for parsing', { filePath, contentType: typeof content });
       const chunks = this.fallbackChunking(content || '', filePath);
       return { chunks, symbols: [], xrefs: [] };
     }
 
     if (!language || typeof language !== 'string') {
-      console.warn(`Invalid language for parsing ${filePath}, using fallback`);
+      logger.warn('Invalid language for parsing', { filePath, languageType: typeof language });
       const chunks = this.fallbackChunking(content, filePath);
       return { chunks, symbols: [], xrefs: [] };
     }
 
     const parser = this.parsers.get(language);
     if (!parser) {
-      console.warn(`No parser available for language ${language} in ${filePath}, using fallback`);
+      logger.warn('No parser available for language', { language, filePath });
       const chunks = this.fallbackChunking(content, filePath);
       return { chunks, symbols: [], xrefs: [] };
     }
@@ -161,7 +174,7 @@ export class TreeSitterProcessor {
     try {
       // Additional validation before parsing
       if (content.length === 0) {
-        console.warn(`Empty content for parsing ${filePath}, using fallback`);
+        logger.warn('Empty content for parsing', { filePath });
         const chunks = this.fallbackChunking(content, filePath);
         return { chunks, symbols: [], xrefs: [] };
       }
@@ -172,17 +185,32 @@ export class TreeSitterProcessor {
       const isTooLarge = content.length > 1024 * 1024; // 1MB limit for safety
 
       if (hasNullBytes || hasInvalidChars || isTooLarge) {
-        console.warn(
-          `Problematic content detected in ${filePath} (${hasNullBytes ? 'null bytes' : ''} ${hasInvalidChars ? 'invalid chars' : ''} ${isTooLarge ? 'too large' : ''}), using fallback`
-        );
+        logger.warn('Problematic content detected, using fallback', {
+          filePath,
+          hasNullBytes,
+          hasInvalidChars,
+          isTooLarge,
+          contentLength: content.length,
+        });
         const chunks = this.fallbackChunking(content, filePath);
         return { chunks, symbols: [], xrefs: [] };
+      }
+
+      // Log Python-specific parsing issues for debugging
+      if (language === 'python') {
+        logger.debug('🐍 Parsing Python file', {
+          filePath,
+          contentLength: content.length,
+          lineCount: content.split('\n').length,
+          hasIndents: /^\s+/.test(content),
+          firstLine: content.split('\n')[0]?.substring(0, 100),
+        });
       }
 
       // Additional content validation - check for incomplete/truncated content
       const trimmedContent = content.trim();
       if (trimmedContent.length === 0) {
-        console.warn(`Content is only whitespace for ${filePath}, using fallback`);
+        logger.warn('Content is only whitespace', { filePath });
         const chunks = this.fallbackChunking(content, filePath);
         return { chunks, symbols: [], xrefs: [] };
       }
@@ -191,9 +219,12 @@ export class TreeSitterProcessor {
       const openBraces = (content.match(/\{/g) || []).length;
       const closeBraces = (content.match(/\}/g) || []).length;
       if (Math.abs(openBraces - closeBraces) > 100) {
-        console.warn(
-          `Highly unbalanced braces in ${filePath}, likely invalid syntax, using fallback`
-        );
+        logger.warn('Highly unbalanced braces, likely invalid syntax', {
+          filePath,
+          openBraces,
+          closeBraces,
+          difference: Math.abs(openBraces - closeBraces),
+        });
         const chunks = this.fallbackChunking(content, filePath);
         return { chunks, symbols: [], xrefs: [] };
       }
@@ -209,7 +240,10 @@ export class TreeSitterProcessor {
           errorMessage.includes('parse') ||
           errorMessage.includes('invalid')
         ) {
-          console.warn(`Tree-sitter parse error for ${filePath}: ${errorMessage}, using fallback`);
+          logger.warn('Tree-sitter parse error, using fallback', {
+            filePath,
+            errorMessage,
+          });
           const chunks = this.fallbackChunking(content, filePath);
           return { chunks, symbols: [], xrefs: [] };
         }
@@ -218,16 +252,18 @@ export class TreeSitterProcessor {
 
       // Validate the parsed tree
       if (!tree || !tree.rootNode) {
-        console.warn(`Invalid parse tree for ${filePath}, using fallback`);
+        logger.warn('Invalid parse tree, using fallback', { filePath });
         const chunks = this.fallbackChunking(content, filePath);
         return { chunks, symbols: [], xrefs: [] };
       }
 
       // Validate root node
       if (!tree.rootNode || tree.rootNode.type !== 'program') {
-        console.warn(
-          `Unexpected root node type in ${filePath}: ${tree.rootNode?.type}, using fallback`
-        );
+        logger.warn('Unexpected root node type, using fallback', {
+          filePath,
+          rootNodeType: tree.rootNode?.type,
+          expectedType: 'program',
+        });
         const chunks = this.fallbackChunking(content, filePath);
         return { chunks, symbols: [], xrefs: [] };
       }
@@ -237,7 +273,10 @@ export class TreeSitterProcessor {
       const xrefs = this.extractXRefs(tree, language);
       return { chunks, symbols, xrefs };
     } catch (error) {
-      console.error(`Tree-sitter processing failed for ${filePath}:`, error);
+      logger.error('Tree-sitter processing failed, using fallback', {
+        filePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
       const chunks = this.fallbackChunking(content, filePath);
       return { chunks, symbols: [], xrefs: [] };
     }
@@ -278,7 +317,10 @@ export class TreeSitterProcessor {
           }
         }
       } catch (error) {
-        console.warn(`Error traversing node in ${language}:`, error);
+        logger.warn('Error traversing node', {
+          language,
+          error: error instanceof Error ? error.message : String(error),
+        });
         // Continue with other nodes
       }
     };
@@ -288,7 +330,9 @@ export class TreeSitterProcessor {
         traverse(tree.rootNode);
       }
     } catch (error) {
-      console.warn(`Error extracting chunks from tree:`, error);
+      logger.warn('Error extracting chunks from tree', {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     if (chunks.length === 0) {
@@ -322,7 +366,10 @@ export class TreeSitterProcessor {
 
       return false;
     } catch (error) {
-      console.warn(`Error checking if node is chunkable:`, error);
+      logger.warn('Error checking if node is chunkable', {
+        language,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return false;
     }
   }
@@ -348,7 +395,9 @@ export class TreeSitterProcessor {
 
       return lines.slice(startLine, endLine + 1).join('\n');
     } catch (error) {
-      console.warn(`Error getting node content:`, error);
+      logger.warn('Error getting node content', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return '';
     }
   }
@@ -362,7 +411,9 @@ export class TreeSitterProcessor {
       );
       return nameNode?.text;
     } catch (error) {
-      console.warn(`Error getting symbol name:`, error);
+      logger.warn('Error getting symbol name', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return undefined;
     }
   }

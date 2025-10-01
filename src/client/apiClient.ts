@@ -601,7 +601,7 @@ export class AmbianceAPIClient {
       logger.info('🚀 Generating embeddings via Ambiance API', {
         textCount: request.texts.length,
         inputType: request.input_type || 'document',
-        model: request.model || 'voyage-context-3',
+        model: request.model || process.env.VOYAGEAI_MODEL || 'voyageai-model',
         encodingFormat: request.encoding_format || 'float32',
       });
 

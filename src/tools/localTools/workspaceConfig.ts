@@ -408,27 +408,21 @@ async function handleSetWorkspace(
   logger.info('🔧 Workspace initialization flag set');
 
   // Check if we should proactively generate embeddings
-  const shouldGenerate = await shouldGenerateEmbeddingsProactively(
-    validation.path!,
-    validation.fileCount || 0
-  );
+  const shouldGenerate = await shouldGenerateEmbeddingsProactively(validation.path!, validation.fileCount || 0);
   logger.info('📊 Proactive embedding generation check', {
     shouldGenerate: shouldGenerate.shouldGenerate,
     reason: shouldGenerate.reason,
     fileCount: validation.fileCount || 0,
   });
 
-  const embeddingGenerationResult = null;
+  let embeddingGenerationResult = null;
   let embeddingMessage = '';
 
   if (shouldGenerate.shouldGenerate) {
     // Start proactive embedding generation in the background
     setTimeout(async () => {
       try {
-        const result = await generateEmbeddingsProactively(
-          validation.path!,
-          validation.fileCount || 0
-        );
+        const result = await generateEmbeddingsProactively(validation.path!, validation.fileCount || 0);
         if (result.success) {
           logger.info('✅ Background embedding generation completed', {
             workspace: validation.path,
@@ -449,8 +443,7 @@ async function handleSetWorkspace(
       }
     }, 100); // Small delay to let workspace_config return first
 
-    embeddingMessage =
-      'Starting background embedding generation for optimal AI tool performance...';
+    embeddingMessage = 'Starting background embedding generation for optimal AI tool performance...';
     logger.info('🚀 Triggered proactive embedding generation after workspace setup');
   } else {
     // Kick off auto-indexing in the background now that workspace is set

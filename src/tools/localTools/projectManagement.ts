@@ -13,7 +13,7 @@ import { LocalEmbeddingStorage } from '../../local/embeddingStorage';
 import { LocalProjectManager, LocalProject } from '../../local/projectManager';
 import * as fs from 'fs';
 import * as path from 'path';
-// Dynamic import for globby (ES module)
+import { globby } from 'globby';
 import { loadIgnorePatterns } from '../../local/projectIdentifier';
 
 interface IgnorePatterns {
@@ -201,7 +201,6 @@ async function analyzeProjectIndexableFiles(projectPath: string): Promise<{
     ];
 
     // Find all matching files (same as indexer)
-    const { globby } = await import('globby');
     const allFiles = await globby(includePatterns, {
       cwd: projectPath,
       ignore: allIgnorePatterns,
@@ -721,8 +720,14 @@ export async function getProjectEmbeddingDetails(args: { projectIdentifier: stri
       },
     };
 
-    // Check for mixed models
-    const compatibility = await storage.validateEmbeddingCompatibility(project.id);
+    // Check for mixed models and compatibility with current model
+    const { getCurrentModelConfiguration } = await import('./embeddingManagement');
+    const currentModelConfig = await getCurrentModelConfiguration();
+    const compatibility = await storage.validateEmbeddingCompatibility(
+      project.id,
+      currentModelConfig.provider,
+      currentModelConfig.dimensions
+    );
 
     // Extract model information for easier consumption - always check for models
     let mixedModels = {

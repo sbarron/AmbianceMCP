@@ -19,7 +19,11 @@ import {
   getProjectEmbeddingDetails,
 } from './projectManagement';
 import * as crypto from 'crypto';
-import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding } from '../../local/quantization';
+import {
+  isQuantized,
+  dequantizeInt8ToFloat32,
+  QuantizedEmbedding,
+} from '../../local/quantization';
 
 export type ManageEmbeddingsAction =
   | 'status'
@@ -240,13 +244,16 @@ export async function getEmbeddingStatus(args: {
   try {
     const storage = new LocalEmbeddingStorage();
 
+    const currentModelConfig = await getCurrentModelConfiguration();
     const modelInfo = await storage.getModelInfo(projectId);
-    const compatibility = await storage.validateEmbeddingCompatibility(projectId);
+    const compatibility = await storage.validateEmbeddingCompatibility(
+      projectId,
+      currentModelConfig.provider,
+      currentModelConfig.dimensions
+    );
     const statsCurrent = await storage.getProjectStats(projectId);
     const statsLegacy =
       legacyProjectId !== projectId ? await storage.getProjectStats(legacyProjectId) : null;
-
-    const currentModelConfig = await getCurrentModelConfiguration();
 
     const result = {
       success: true,
@@ -346,7 +353,12 @@ export async function runEmbeddingHealthCheck(args: {
       };
     }
 
-    const compatibility = await storage.validateEmbeddingCompatibility(projectId);
+    const currentModelConfig = await getCurrentModelConfiguration();
+    const compatibility = await storage.validateEmbeddingCompatibility(
+      projectId,
+      currentModelConfig.provider,
+      currentModelConfig.dimensions
+    );
     if (!compatibility.compatible) {
       issues.push('Embedding model compatibility issues detected.');
       recommendations.push('Run manage_embeddings with action="migrate" to regenerate embeddings.');
@@ -465,7 +477,12 @@ export async function migrateProjectEmbeddings(args: {
     const generator = new LocalEmbeddingGenerator(storage);
 
     if (!force) {
-      const compatibility = await storage.validateEmbeddingCompatibility(projectId);
+      const currentModelConfig = await getCurrentModelConfiguration();
+      const compatibility = await storage.validateEmbeddingCompatibility(
+        projectId,
+        currentModelConfig.provider,
+        currentModelConfig.dimensions
+      );
       if (compatibility.compatible) {
         return {
           success: true,
@@ -489,7 +506,12 @@ export async function migrateProjectEmbeddings(args: {
       maxConcurrency,
     });
 
-    const postMigrationCompatibility = await storage.validateEmbeddingCompatibility(projectId);
+    const currentModelConfig = await getCurrentModelConfiguration();
+    const postMigrationCompatibility = await storage.validateEmbeddingCompatibility(
+      projectId,
+      currentModelConfig.provider,
+      currentModelConfig.dimensions
+    );
     const newStats = await storage.getProjectStats(projectId);
 
     const result = {
@@ -547,7 +569,12 @@ export async function validateProjectEmbeddings(args: {
   try {
     const storage = new LocalEmbeddingStorage();
 
-    const compatibility = await storage.validateEmbeddingCompatibility(projectId);
+    const currentModelConfig = await getCurrentModelConfiguration();
+    const compatibility = await storage.validateEmbeddingCompatibility(
+      projectId,
+      currentModelConfig.provider,
+      currentModelConfig.dimensions
+    );
 
     const result: any = {
       success: true,
@@ -600,7 +627,9 @@ export async function validateProjectEmbeddings(args: {
           integrityIssues.push(`Embedding ${embedding.id} has invalid vector data.`);
         }
 
-        const hasInvalidValues = embeddingVector.some((value: number) => !Number.isFinite(value));
+        const hasInvalidValues = embeddingVector.some(
+          (value: number) => !Number.isFinite(value)
+        );
         if (hasInvalidValues) {
           integrityIssues.push(`Embedding ${embedding.id} contains NaN or infinite values.`);
         }

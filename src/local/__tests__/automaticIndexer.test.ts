@@ -184,9 +184,10 @@ describe('AutomaticIndexer', () => {
   });
 
   describe('indexProject', () => {
-    beforeEach(() => {
-      // Mock globby to return test files
-      const mockGlobby = require('globby').globby;
+    beforeEach(async () => {
+      // Mock globby to return test files - using dynamic import for ESM compatibility
+      const globbyModule = await import('globby');
+      const mockGlobby = globbyModule.globby;
       (mockGlobby as jest.MockedFunction<any>).mockResolvedValue([
         '/test/project/src/index.ts',
         '/test/project/src/utils.ts',
@@ -440,7 +441,8 @@ describe('AutomaticIndexer', () => {
         'dist/**',
       ]);
 
-      const mockGlobby = require('globby').globby;
+      const globbyModule = await import('globby');
+      const mockGlobby = globbyModule.globby;
       (mockGlobby as jest.MockedFunction<any>).mockResolvedValue(['/test/project/src/index.ts', '/test/project/src/utils.ts']);
 
       await indexer.indexProject('/test/project');

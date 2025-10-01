@@ -444,9 +444,7 @@ export async function handleGetUploadedContextBundle(args: {
 
     // Beta Limitation: Context bundle for uploaded projects not yet implemented
     // This feature is planned for post-beta releases
-    logger.info(
-      '📁 Context bundle for uploaded projects requested but not yet implemented in beta'
-    );
+    logger.info('📁 Context bundle for uploaded projects requested but not yet implemented in beta');
     const bundle = {
       snippets: [],
       budget: {

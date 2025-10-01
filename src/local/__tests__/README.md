@@ -14,7 +14,7 @@ Tests for the core embedding provider functionality:
 
 ### 2. EmbeddingGenerator Tests (`embeddingGenerator.test.ts`)
 Integration tests for the embedding generator:
-- Provider fallback logic (Ambiance API → OpenAI → Local)
+- Provider selection logic (Local → OpenAI → VoyageAI with explicit enabling)
 - Batch embedding generation
 - Metadata tracking and validation
 - Error handling across providers
@@ -136,10 +136,10 @@ The test suite covers:
 - Error handling and validation
 - Pipeline management
 
-✅ **Provider Fallback**
-- Ambiance API → OpenAI → Local model
-- Graceful degradation
-- Error recovery
+✅ **Provider Selection**
+- Local opensource models as default
+- Explicit enabling for OpenAI/VoyageAI
+- Graceful degradation and error recovery
 
 ✅ **Storage Operations**
 - Database schema and operations

@@ -127,7 +127,7 @@ export class LocalEmbeddingStorage {
     }
 
     // Enable quantization by default for new installations, or based on explicit setting
-    this.enableQuantization = enableQuantization ?? process.env.EMBEDDING_QUANTIZATION === 'true';
+    this.enableQuantization = enableQuantization ?? (process.env.EMBEDDING_QUANTIZATION === 'true');
 
     // Initialize quota management
     this.enableQuotas = process.env.EMBEDDING_QUOTAS === 'true';
@@ -499,8 +499,8 @@ export class LocalEmbeddingStorage {
 
       throw new Error(
         `Storage quota exceeded for project ${chunk.projectId}. ` +
-          `Cannot store ${this.formatQuotaSize(estimatedSize)} of embedding data. ` +
-          `Consider increasing quota or clearing old embeddings.`
+        `Cannot store ${this.formatQuotaSize(estimatedSize)} of embedding data. ` +
+        `Consider increasing quota or clearing old embeddings.`
       );
     }
 
@@ -527,17 +527,12 @@ export class LocalEmbeddingStorage {
             chunkId: chunk.id,
             originalSize: chunk.embedding.length * 4,
             quantizedSize: embeddingToStore.data.length,
-            compressionRatio: ((chunk.embedding.length * 4) / embeddingToStore.data.length).toFixed(
-              1
-            ),
+            compressionRatio: ((chunk.embedding.length * 4) / embeddingToStore.data.length).toFixed(1),
           });
         } catch (quantizationError) {
           logger.warn('⚠️ Quantization failed, storing as float32', {
             chunkId: chunk.id,
-            error:
-              quantizationError instanceof Error
-                ? quantizationError.message
-                : String(quantizationError),
+            error: quantizationError instanceof Error ? quantizationError.message : String(quantizationError),
           });
           embeddingToStore = chunk.embedding;
           embeddingFormat = 'float32';
@@ -727,10 +722,7 @@ export class LocalEmbeddingStorage {
   /**
    * Get embeddings by format for a project (for compatibility checking)
    */
-  async getEmbeddingsByFormat(
-    projectId: string,
-    format: 'float32' | 'int8'
-  ): Promise<EmbeddingChunk[]> {
+  async getEmbeddingsByFormat(projectId: string, format: 'float32' | 'int8'): Promise<EmbeddingChunk[]> {
     if (!this.initialized) {
       await this.initializeDatabase();
     }
@@ -816,11 +808,7 @@ export class LocalEmbeddingStorage {
   /**
    * Get embeddings with content matching a pattern (for content-based search)
    */
-  async searchEmbeddingsByContent(
-    projectId: string,
-    pattern: string,
-    limit: number = 50
-  ): Promise<EmbeddingChunk[]> {
+  async searchEmbeddingsByContent(projectId: string, pattern: string, limit: number = 50): Promise<EmbeddingChunk[]> {
     if (!this.initialized) {
       await this.initializeDatabase();
     }
@@ -919,10 +907,7 @@ export class LocalEmbeddingStorage {
   /**
    * Calculate cosine similarity between two vectors (handles both quantized and float32)
    */
-  private cosineSimilarity(
-    a: number[] | QuantizedEmbedding,
-    b: number[] | QuantizedEmbedding
-  ): number {
+  private cosineSimilarity(a: number[] | QuantizedEmbedding, b: number[] | QuantizedEmbedding): number {
     // Normalize both embeddings to float32 arrays
     const aFloat32 = isQuantized(a) ? dequantizeInt8ToFloat32(a) : a;
     const bFloat32 = isQuantized(b) ? dequantizeInt8ToFloat32(b) : b;
@@ -1399,8 +1384,13 @@ export class LocalEmbeddingStorage {
 
   /**
    * Validate embedding compatibility for similarity search
+   * Now also checks if stored embeddings match the current model configuration
    */
-  async validateEmbeddingCompatibility(projectId: string): Promise<{
+  async validateEmbeddingCompatibility(
+    projectId: string,
+    currentProvider?: string,
+    currentDimensions?: number
+  ): Promise<{
     compatible: boolean;
     issues: string[];
     recommendations: string[];
@@ -1440,7 +1430,7 @@ export class LocalEmbeddingStorage {
             const l = (label || '').toLowerCase();
             if (l.startsWith('text-embedding-')) return 'openai';
             if (l.startsWith('voyage-') || l === 'voyageai' || l === 'ambiance') return 'voyageai';
-            if (l.includes('minilm') || l.includes('transformers')) return 'local';
+            if (l.includes('minilm') || l.includes('transformers') || l.includes('e5')) return 'local';
             return label;
           };
           const merged: Record<string, { provider: string; dimensions: number; count: number }> =
@@ -1473,6 +1463,37 @@ export class LocalEmbeddingStorage {
           if (mergedRows.length === 0) {
             issues.push('No embeddings found for this project');
             recommendations.push('Generate embeddings for the project first');
+          }
+
+          // NEW: Check if stored embeddings match current model configuration
+          if (currentProvider && currentDimensions && mergedRows.length === 1) {
+            const storedModel = mergedRows[0];
+            const normalizedCurrentProvider = norm(currentProvider);
+            const normalizedStoredProvider = norm(storedModel.provider);
+
+            logger.debug('🔍 Checking embedding model compatibility', {
+              currentProvider,
+              currentDimensions,
+              normalizedCurrentProvider,
+              storedProvider: storedModel.provider,
+              storedDimensions: storedModel.dimensions,
+              normalizedStoredProvider,
+              providerMatch: normalizedStoredProvider === normalizedCurrentProvider,
+              dimensionMatch: storedModel.dimensions === currentDimensions,
+            });
+
+            if (
+              normalizedStoredProvider !== normalizedCurrentProvider ||
+              storedModel.dimensions !== currentDimensions
+            ) {
+              compatible = false;
+              issues.push(
+                `Stored embeddings (${normalizedStoredProvider}, ${storedModel.dimensions}D) don't match current model (${normalizedCurrentProvider}, ${currentDimensions}D)`
+              );
+              recommendations.push(
+                'Run migration to regenerate embeddings with the current model configuration'
+              );
+            }
           }
 
           // Check for null or invalid dimensions
@@ -1852,10 +1873,7 @@ export class LocalEmbeddingStorage {
   /**
    * Check if storing embeddings would exceed quota and enforce cleanup if needed
    */
-  private async checkAndEnforceQuota(
-    projectId: string,
-    newEmbeddingSize: number
-  ): Promise<{
+  private async checkAndEnforceQuota(projectId: string, newEmbeddingSize: number): Promise<{
     canStore: boolean;
     quotaExceeded: boolean;
     cleanupRequired: boolean;
@@ -1882,10 +1900,7 @@ export class LocalEmbeddingStorage {
       excess: this.formatQuotaSize(projectedUsage - quotaBytes),
     });
 
-    const cleanedEmbeddings = await this.cleanupOldEmbeddings(
-      projectId,
-      projectedUsage - quotaBytes
-    );
+    const cleanedEmbeddings = await this.cleanupOldEmbeddings(projectId, projectedUsage - quotaBytes);
 
     // Check again after cleanup
     const finalUsage = await this.getProjectStorageUsage(projectId);
@@ -1971,9 +1986,7 @@ export class LocalEmbeddingStorage {
                 [projectId, projectId, projectId],
                 (statsErr: Error | null) => {
                   if (statsErr) {
-                    logger.warn('⚠️ Failed to update project stats after cleanup', {
-                      error: statsErr.message,
-                    });
+                    logger.warn('⚠️ Failed to update project stats after cleanup', { error: statsErr.message });
                   }
                 }
               );
@@ -2107,7 +2120,7 @@ export class LocalEmbeddingStorage {
         const storageSavings = originalSizeIfAllFloat32 - totalActualSize;
         const compressionRatio = totalChunks > 0 ? originalSizeIfAllFloat32 / totalActualSize : 1;
 
-        const projectStats = undefined;
+        let projectStats = undefined;
         if (projectId) {
           this.db!.get(
             `
@@ -2132,14 +2145,12 @@ export class LocalEmbeddingStorage {
                 float32Embeddings: globalStats.float32_embeddings,
                 storageSavings,
                 averageCompressionRatio: compressionRatio,
-                projectStats: projStats
-                  ? {
-                      totalChunks: projStats.total_chunks,
-                      totalFiles: projStats.total_chunks, // Approximation
-                      quantizedChunks: projStats.quantized_chunks,
-                      float32Chunks: projStats.float32_chunks,
-                    }
-                  : undefined,
+                projectStats: projStats ? {
+                  totalChunks: projStats.total_chunks,
+                  totalFiles: projStats.total_chunks, // Approximation
+                  quantizedChunks: projStats.quantized_chunks,
+                  float32Chunks: projStats.float32_chunks,
+                } : undefined,
               });
             }
           );

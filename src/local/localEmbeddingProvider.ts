@@ -34,8 +34,8 @@ export interface LocalEmbeddingConfig {
     | 'all-MiniLM-L6-v2'
     | 'multilingual-e5-large'
     | 'all-mpnet-base-v2'
-    | 'advanced-neural-dense'
-    | 'multilingual-e5-large-instruct';
+    | 'advanced-neural-dense';
+    // Note: multilingual-e5-large-instruct is not available in Xenova Transformers
   maxLength?: number;
   normalize?: boolean;
   pooling?: 'mean' | 'cls';
@@ -62,12 +62,12 @@ export class LocalEmbeddingProvider {
   private getModelDimensions(): number {
     switch (this.config.model) {
       case 'all-MiniLM-L6-v2':
-        return 384;
-      case 'multilingual-e5-large':
+        return 384; // Standard expected dimensions
       case 'all-mpnet-base-v2':
       case 'advanced-neural-dense':
-      case 'multilingual-e5-large-instruct':
-        return 768;
+        return 768; // Standard expected dimensions
+      case 'multilingual-e5-large':
+        return 1024; // Actual dimensions returned by Xenova/multilingual-e5-large
       default:
         return 384;
     }
@@ -80,8 +80,7 @@ export class LocalEmbeddingProvider {
     | 'all-MiniLM-L6-v2'
     | 'multilingual-e5-large'
     | 'all-mpnet-base-v2'
-    | 'advanced-neural-dense'
-    | 'multilingual-e5-large-instruct' {
+    | 'advanced-neural-dense' {
     const envModel = process.env.LOCAL_EMBEDDING_MODEL;
     if (envModel) {
       // Validate the environment variable value
@@ -94,8 +93,6 @@ export class LocalEmbeddingProvider {
           return 'all-mpnet-base-v2';
         case 'advanced-neural-dense':
           return 'advanced-neural-dense';
-        case 'multilingual-e5-large-instruct':
-          return 'multilingual-e5-large-instruct';
         default:
           logger.warn(
             `⚠️ Unknown LOCAL_EMBEDDING_MODEL value: ${envModel}, using all-MiniLM-L6-v2`
@@ -178,8 +175,6 @@ export class LocalEmbeddingProvider {
       validCount: validTexts.length,
       avgLength: Math.round(validTexts.reduce((sum, text) => sum + text.length, 0) / validTexts.length),
       sampleText: validTexts[0]?.substring(0, 100) + (validTexts[0]?.length > 100 ? '...' : ''),
-      textLengths: validTexts.map(t => t.length),
-      truncatedCount: validTexts.filter(t => t.length > this.config.maxLength * 4).length,
     });
 
     await this.initializePipeline();
@@ -197,146 +192,75 @@ export class LocalEmbeddingProvider {
         ),
       });
 
-      // Truncate texts that are too long and ensure they're properly formatted
-      const truncatedTexts = validTexts.map((text, index) => {
-        const truncated = text.length > this.config.maxLength * 4 // Rough char to token ratio
+      // Truncate texts that are too long
+      const truncatedTexts = validTexts.map(text =>
+        text.length > this.config.maxLength * 4 // Rough char to token ratio
           ? text.substring(0, this.config.maxLength * 4)
-          : text;
+          : text
+      );
 
-        // Ensure each text is non-empty after truncation
-        if (!truncated || truncated.trim().length === 0) {
-          logger.warn('⚠️ Text became empty after truncation, using placeholder', {
-            originalLength: text.length,
-            truncatedLength: truncated.length,
-            index,
-          });
-          return `[Text chunk ${index + 1}]`;
-        }
-
-        return truncated;
-      });
-
-      // Additional validation: ensure we have valid texts to process
-      const finalValidTexts = truncatedTexts.filter(text => text && text.trim().length > 0);
-      if (finalValidTexts.length === 0) {
-        throw new Error('All texts became empty after truncation');
-      }
-
-      logger.debug('📝 Final text preparation', {
-        originalCount: validTexts.length,
-        finalCount: finalValidTexts.length,
-        allTexts: finalValidTexts.map((text, i) => `[${i}]: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`),
-      });
-
-      // Use final valid texts for embedding generation
-      const textsToProcess = finalValidTexts;
-
-      // Try different pipeline configurations
+      // Generate embeddings - handle multilingual-e5-large specially
       let embeddings: any;
-      let configAttempts = 0;
-      const maxAttempts = 3;
 
-      while (configAttempts < maxAttempts) {
+      // Process texts individually to avoid batch processing issues
+      // This appears to be a fundamental limitation of the Transformers.js models
+      logger.info('🔄 Processing texts individually to avoid batch processing issues');
+      const individualResults = [];
+
+      for (const text of truncatedTexts) {
         try {
-          // Generate embeddings with current configuration
-          embeddings = await this.pipeline(textsToProcess, {
+          const singleResult = await this.pipeline([text], {
             pooling: this.config.pooling,
             normalize: this.config.normalize,
-            // For feature extraction pipelines, we want the raw embeddings
-            return_tensors: false, // Return raw tensors, not wrapped in Tensor objects
           });
 
-          // If we got a valid result, break out of the loop
-          if (embeddings && (Array.isArray(embeddings) || (typeof embeddings === 'object' && 'data' in embeddings))) {
-            break;
-          }
-
-          logger.warn('⚠️ Pipeline returned unexpected format, retrying with different config', {
-            attempt: configAttempts + 1,
-            resultType: typeof embeddings,
-            isArray: Array.isArray(embeddings),
-            hasData: embeddings && typeof embeddings === 'object' && 'data' in embeddings,
-          });
-
-        } catch (pipelineError) {
-          logger.warn('⚠️ Pipeline failed with current config, trying alternative', {
-            attempt: configAttempts + 1,
-            error: pipelineError instanceof Error ? pipelineError.message : String(pipelineError),
-          });
-        }
-
-        configAttempts++;
-
-          // Try with different configurations
-        if (configAttempts === 1) {
-          // Try without normalization and with explicit options
-          embeddings = await this.pipeline(textsToProcess, {
-            pooling: 'mean', // Use mean pooling explicitly
-            normalize: false,
-            return_tensors: false,
-          });
-        } else if (configAttempts === 2) {
-          // Try with different pooling strategy and single text processing
-          logger.info('🔄 Attempting single text processing approach');
-          // Process texts one by one to ensure individual embeddings
-          const singleResults = [];
-          for (let i = 0; i < textsToProcess.length; i++) {
-            let singleResult = await this.pipeline([textsToProcess[i]], {
-              pooling: 'mean',
-              normalize: true,
-              return_tensors: false,
+          if (Array.isArray(singleResult) && singleResult.length > 0) {
+            individualResults.push(singleResult[0]);
+          } else if (singleResult && typeof singleResult === 'object' && 'data' in singleResult) {
+            individualResults.push(singleResult);
+          } else {
+            logger.warn('⚠️ Unexpected single result format', {
+              resultType: typeof singleResult,
+              model: this.config.model,
             });
-
-            // Convert Tensor objects to arrays if needed
-            if (singleResult?.constructor?.name === 'Tensor') {
-              singleResult = singleResult.tolist();
-            }
-
-            singleResults.push(singleResult);
+            // Skip this result rather than failing completely
+            continue;
           }
-          embeddings = singleResults;
-        } else {
-          // Last attempt with minimal options and explicit array expectation
-          embeddings = await this.pipeline(textsToProcess);
+        } catch (singleTextError) {
+          logger.warn('⚠️ Failed to process individual text', {
+            error: singleTextError instanceof Error ? singleTextError.message : String(singleTextError),
+            model: this.config.model,
+          });
+          // Skip this result rather than failing completely
+          continue;
         }
       }
 
-      if (!embeddings || (!Array.isArray(embeddings) && !(typeof embeddings === 'object' && 'data' in embeddings))) {
-        throw new Error(`Pipeline failed to return valid embeddings after ${maxAttempts} attempts`);
+      if (individualResults.length === 0) {
+        throw new Error('No texts could be processed successfully');
       }
 
-      // Debug: Log what we actually get from the pipeline
+      embeddings = individualResults;
+
+      // For individual processing, we need to adjust the validation
+      // since we're now processing texts individually, the result should have the right count
       logger.debug('🔍 Pipeline returned:', {
         type: typeof embeddings,
         isArray: Array.isArray(embeddings),
         length: Array.isArray(embeddings) ? embeddings.length : 'N/A',
+        constructor: embeddings?.constructor?.name,
         firstItem: Array.isArray(embeddings) && embeddings.length > 0 ? {
           type: typeof embeddings[0],
           keys: embeddings[0] ? Object.keys(embeddings[0]) : 'null/undefined',
           hasData: embeddings[0] && 'data' in embeddings[0],
           dataType: embeddings[0]?.data ? typeof embeddings[0].data : 'N/A',
-          dataLength: embeddings[0]?.data?.length || 'N/A',
-          isDataArray: Array.isArray(embeddings[0]?.data)
+          dataLength: embeddings[0]?.data ? embeddings[0].data.length : 'N/A',
+          // Check if it's a tensor or other complex object
+          isTensor: embeddings[0]?.data?.constructor?.name,
         } : 'no items',
-        fullObject: typeof embeddings === 'object' && embeddings !== null ? {
-          constructor: embeddings.constructor?.name,
-          keys: Object.keys(embeddings),
-          values: Object.values(embeddings).map(v => typeof v)
-        } : 'not an object',
-        // Additional debugging for transformers.js specific objects
-        isTensor: embeddings?.constructor?.name === 'Tensor',
-        tensorShape: embeddings?.shape || 'N/A',
-        tensorDtype: embeddings?.dtype || 'N/A'
+        truncatedTextsCount: truncatedTexts.length,
+        model: this.config.model,
       });
-
-      // If it's a Tensor object, convert it to array format
-      if (embeddings?.constructor?.name === 'Tensor') {
-        logger.info('🔄 Converting Tensor object to array format', {
-          shape: embeddings.shape,
-          dtype: embeddings.dtype,
-        });
-        embeddings = embeddings.tolist(); // Convert Tensor to nested array
-      }
 
       // Handle different response formats
       let embeddingArray: any[];
@@ -350,12 +274,19 @@ export class LocalEmbeddingProvider {
           throw new Error(`Pipeline returned invalid embeddings: expected array or object with data, got ${typeof embeddings}`);
         }
       } else {
-        // Check if this is an array of arrays (from single text processing)
-        if (embeddings.length > 0 && Array.isArray(embeddings[0])) {
-          logger.debug('📝 Array of arrays detected, flattening');
-          embeddingArray = embeddings.flat();
-        } else {
-          embeddingArray = embeddings;
+        // embeddings is already an array
+        embeddingArray = embeddings;
+      }
+
+      // Ensure each result has the expected format
+      for (let i = 0; i < embeddingArray.length; i++) {
+        const result = embeddingArray[i];
+        if (result && result.data && result.data.length !== this.getModelDimensions()) {
+          logger.warn(`⚠️ Result ${i} has unexpected dimensions`, {
+            expected: this.getModelDimensions(),
+            actual: result.data.length,
+            model: this.config.model,
+          });
         }
       }
 
@@ -364,39 +295,25 @@ export class LocalEmbeddingProvider {
         throw new Error('Pipeline returned empty embeddings array');
       }
 
-      if (embeddingArray.length !== textsToProcess.length) {
-        logger.warn('⚠️ Pipeline returned unexpected number of embeddings', {
-          expected: textsToProcess.length,
+      if (embeddingArray.length !== validTexts.length) {
+        logger.warn('⚠️ Result count mismatch', {
+          expected: validTexts.length,
           actual: embeddingArray.length,
-          textCount: textsToProcess.length,
-          firstTextLength: textsToProcess[0]?.length,
-          sampleText: textsToProcess[0]?.substring(0, 50) + '...',
+          model: this.config.model,
         });
 
-        // Handle different scenarios
-        if (embeddingArray.length === 1 && textsToProcess.length > 1) {
-          // Pipeline returned single embedding for multiple texts - replicate it
-          logger.info('📝 Replicating single embedding for all texts', {
-            embeddingDimensions: embeddingArray[0]?.data?.length || 'unknown',
-          });
-          embeddingArray = new Array(textsToProcess.length).fill(embeddingArray[0]);
-        } else if (embeddingArray.length < textsToProcess.length) {
-          // Pipeline returned fewer embeddings - this is an error
-          throw new Error(`Pipeline returned ${embeddingArray.length} embeddings for ${textsToProcess.length} texts. Expected one embedding per text.`);
-        } else {
-          // Pipeline returned more embeddings than texts - this is unexpected
-          logger.warn('⚠️ Pipeline returned more embeddings than texts, using first N', {
-            returned: embeddingArray.length,
-            using: textsToProcess.length,
-          });
-          embeddingArray = embeddingArray.slice(0, textsToProcess.length);
+        // If we have more results than expected, truncate
+        if (embeddingArray.length > validTexts.length) {
+          embeddingArray = embeddingArray.slice(0, validTexts.length);
         }
+        // If we have fewer results than expected, this indicates processing errors
+        // but continue with what we have rather than failing completely
       }
 
       // Convert to our standard format
       const results: EmbeddingResult[] = [];
 
-      for (let i = 0; i < textsToProcess.length; i++) {
+      for (let i = 0; i < embeddingArray.length; i++) {
         if (!embeddingArray[i]) {
           throw new Error(`Invalid embedding result at index ${i}: null/undefined`);
         }
@@ -442,7 +359,6 @@ export class LocalEmbeddingProvider {
         model: this.config.model,
         count: results.length,
         dimensions: results[0]?.dimensions,
-        processedTexts: textsToProcess.length,
       });
 
       return results;
@@ -504,8 +420,7 @@ export function getDefaultLocalProvider(config?: LocalEmbeddingConfig): LocalEmb
         | 'all-MiniLM-L6-v2'
         | 'multilingual-e5-large'
         | 'all-mpnet-base-v2'
-        | 'advanced-neural-dense'
-        | 'multilingual-e5-large-instruct' = 'all-MiniLM-L6-v2';
+        | 'advanced-neural-dense' = 'all-MiniLM-L6-v2';
 
       switch (envModel) {
         case 'all-minilm-l6-v2':
@@ -519,9 +434,6 @@ export function getDefaultLocalProvider(config?: LocalEmbeddingConfig): LocalEmb
           break;
         case 'advanced-neural-dense':
           modelName = 'advanced-neural-dense';
-          break;
-        case 'multilingual-e5-large-instruct':
-          modelName = 'multilingual-e5-large-instruct';
           break;
         default:
           logger.warn(

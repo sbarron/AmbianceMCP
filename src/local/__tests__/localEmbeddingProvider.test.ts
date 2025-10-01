@@ -232,8 +232,9 @@ describe('LocalEmbeddingProvider', () => {
 
   describe('Error Handling', () => {
     test('should handle pipeline initialization failure', async () => {
-      // Mock pipeline to throw error
-      require('@xenova/transformers').pipeline.mockRejectedValue(
+      // Mock pipeline to throw error - using dynamic import for ESM compatibility
+      const transformersModule = await import('@xenova/transformers');
+      transformersModule.pipeline.mockRejectedValue(
         new Error('Model download failed')
       );
 
@@ -245,9 +246,10 @@ describe('LocalEmbeddingProvider', () => {
     test('should handle embedding generation failure', async () => {
       provider = new LocalEmbeddingProvider();
 
-      // Mock the pipeline to throw during generation
+      // Mock the pipeline to throw during generation - using dynamic import for ESM compatibility
+      const transformersModule = await import('@xenova/transformers');
       const mockPipeline = jest.fn().mockRejectedValue(new Error('Generation failed'));
-      require('@xenova/transformers').pipeline.mockResolvedValue(mockPipeline);
+      transformersModule.pipeline.mockResolvedValue(mockPipeline);
 
       // Create a new provider with the failing mock
       const failingProvider = new LocalEmbeddingProvider();

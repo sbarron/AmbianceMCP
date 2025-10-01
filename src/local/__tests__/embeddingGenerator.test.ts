@@ -78,7 +78,7 @@ describe('LocalEmbeddingGenerator', () => {
       }),
       generateEmbeddings: jest.fn().mockResolvedValue({
         embeddings: [[0.1, 0.2, 0.3]],
-        model: 'voyage-context-3',
+        model: process.env.VOYAGEAI_MODEL || 'voyageai-model',
         dimensions: 3,
         input_type: 'document',
         encoding_format: 'float32',
@@ -263,7 +263,7 @@ describe('LocalEmbeddingGenerator', () => {
     test('should handle chunking options', async () => {
       mockApiClient.generateEmbeddings.mockResolvedValue({
         embeddings: [[0.1, 0.2, 0.3]],
-        model: 'voyage-context-3',
+        model: process.env.VOYAGEAI_MODEL || 'voyageai-model',
         dimensions: 3,
         input_type: 'document',
         encoding_format: 'float32',
@@ -289,7 +289,7 @@ describe('LocalEmbeddingGenerator', () => {
     test('should generate embedding for query text', async () => {
       mockApiClient.generateEmbeddings.mockResolvedValue({
         embeddings: [[0.1, 0.2, 0.3, 0.4, 0.5]],
-        model: 'voyage-context-3',
+        model: process.env.VOYAGEAI_MODEL || 'voyageai-model',
         dimensions: 5,
         input_type: 'document',
         encoding_format: 'float32',
@@ -308,7 +308,7 @@ describe('LocalEmbeddingGenerator', () => {
     test('should handle empty query', async () => {
       mockApiClient.generateEmbeddings.mockResolvedValue({
         embeddings: [[]],
-        model: 'voyage-context-3',
+        model: process.env.VOYAGEAI_MODEL || 'voyageai-model',
         dimensions: 0,
         input_type: 'document',
         encoding_format: 'float32',
@@ -331,7 +331,7 @@ describe('LocalEmbeddingGenerator', () => {
     test('should use project-specific embedding generation when projectId provided', async () => {
       mockApiClient.generateEmbeddings.mockResolvedValue({
         embeddings: [[0.1, 0.2, 0.3]],
-        model: 'voyage-context-3',
+        model: process.env.VOYAGEAI_MODEL || 'voyageai-model',
         dimensions: 3,
         input_type: 'document',
         encoding_format: 'float32',
@@ -375,9 +375,8 @@ describe('LocalEmbeddingGenerator', () => {
       expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
     });
 
-    test('should fallback to Ambiance API when LOCAL_EMBEDDING_MODEL not set', async () => {
-      // Temporarily remove LOCAL_EMBEDDING_MODEL to test fallback
-      delete process.env.LOCAL_EMBEDDING_MODEL;
+    test('should use local provider by default even when Ambiance API key is available', async () => {
+      // Keep LOCAL_EMBEDDING_MODEL set but add Ambiance API key
       process.env.AMBIANCE_API_KEY = process.env.AMBIANCE_API_KEY || 'test-key';
       mockApiClient.post.mockResolvedValue({
         data: { embeddings: [[0.1, 0.2, 0.3]] }
@@ -385,19 +384,21 @@ describe('LocalEmbeddingGenerator', () => {
 
       await generator.generateQueryEmbedding('test');
 
-      expect(mockApiClient.generateEmbeddings).toHaveBeenCalled();
-
-      // Restore for other tests
-      process.env.LOCAL_EMBEDDING_MODEL = 'all-MiniLM-L6-v2';
+      // Should not call Ambiance API unless explicitly enabled
+      expect(mockApiClient.generateEmbeddings).not.toHaveBeenCalled();
+      expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
     });
 
-    test('should handle local provider errors and fallback to Ambiance API', async () => {
+    test('should handle local provider errors and fallback to Ambiance API only when explicitly enabled', async () => {
       // Mock local provider to throw error
       (LocalEmbeddingProvider as jest.Mock).mockImplementation(() => {
         throw new Error('Local provider failed');
       });
 
-      // With local provider failing, should fallback to Ambiance API
+      // Enable Ambiance API explicitly
+      process.env.USE_VOYAGEAI_EMBEDDINGS = 'true';
+      process.env.AMBIANCE_API_KEY = process.env.AMBIANCE_API_KEY || 'test-key';
+
       mockApiClient.post.mockResolvedValue({
         data: { embeddings: [[0.1, 0.2, 0.3]] }
       });
@@ -406,6 +407,9 @@ describe('LocalEmbeddingGenerator', () => {
 
       expect(mockApiClient.generateEmbeddings).toHaveBeenCalled();
       expect(mockLogger.error).toHaveBeenCalled();
+
+      // Clean up
+      delete process.env.USE_VOYAGEAI_EMBEDDINGS;
     });
 
     test('should handle missing API keys with local provider', async () => {

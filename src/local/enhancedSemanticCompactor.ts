@@ -254,8 +254,13 @@ Try using a more specific directory or check the project path.`;
     }
 
     // Check embedding model compatibility before searching
-    const compatibility =
-      await this.embeddingStorage.validateEmbeddingCompatibility(actualProjectId);
+    const currentProvider = this.embeddingGenerator.getCurrentProvider();
+    const currentDimensions = this.embeddingGenerator.getCurrentDimensions();
+    const compatibility = await this.embeddingStorage.validateEmbeddingCompatibility(
+      actualProjectId,
+      currentProvider,
+      currentDimensions
+    );
     if (!compatibility.compatible) {
       logger.warn('⚠️ Embedding model compatibility issue detected', {
         issues: compatibility.issues,

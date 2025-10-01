@@ -164,9 +164,7 @@ export function calculateQuantizationError(
 /**
  * Check if an embedding is quantized (int8) or raw (float32)
  */
-export function isQuantized(
-  embedding: number[] | QuantizedEmbedding
-): embedding is QuantizedEmbedding {
+export function isQuantized(embedding: number[] | QuantizedEmbedding): embedding is QuantizedEmbedding {
   return 'data' in embedding && 'params' in embedding;
 }
 

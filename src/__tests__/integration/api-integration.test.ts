@@ -85,14 +85,14 @@ describe('Ambiance MCP API Integration', () => {
       const result = await client.generateEmbeddings({
         texts: ['test text'],
         input_type: 'document',
-        model: 'voyage-context-3'
+        model: process.env.VOYAGEAI_MODEL || 'voyageai-model'
       });
 
       expect(result).toBeDefined();
       expect(result.embeddings).toBeDefined();
       expect(Array.isArray(result.embeddings)).toBe(true);
       expect(result.embeddings.length).toBe(1);
-      expect(result.model).toBe('voyage-context-3');
+      expect(result.model).toBe(process.env.VOYAGEAI_MODEL || 'voyageai-model');
       expect(result.dimensions).toBe(1024);
     });
   });

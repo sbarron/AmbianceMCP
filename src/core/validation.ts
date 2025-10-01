@@ -821,10 +821,9 @@ export function validateEnhancedContext(content: string, metadata?: any): void {
         tokenCount,
         metadata,
         isEmbeddingContext,
-        contentPreview: content.substring(0, 200),
+        contentPreview: content.substring(0, 200)
       },
-      suggestion:
-        'Enhanced context appears to be placeholder data. Try different retrieval parameters',
+      suggestion: 'Enhanced context appears to be placeholder data. Try different retrieval parameters',
     });
   }
 }
