@@ -417,7 +417,12 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
     const miniBundle = await buildMiniBundle(jumpTargets, indices.files, request.maxTokens);
 
     // 8. Generate deterministic answer draft
-    const answerDraft = await generateDeterministicAnswer(plan, request.taskType, jumpTargets, indices);
+    const answerDraft = await generateDeterministicAnswer(
+      plan,
+      request.taskType,
+      jumpTargets,
+      indices
+    );
 
     // 9. Compute next actions
     const nextActions = computeNextActions(jumpTargets, request.taskType);
@@ -499,7 +504,10 @@ async function loadProjectIndices(projectPath: string, useCache: boolean): Promi
 
     if (useCache) {
       // Try to reuse existing enhanced project summary
-      const enhancedSummary = await buildEnhancedProjectSummary(validatedProjectPath, files.slice(0, 100));
+      const enhancedSummary = await buildEnhancedProjectSummary(
+        validatedProjectPath,
+        files.slice(0, 100)
+      );
 
       return {
         files,
@@ -509,7 +517,7 @@ async function loadProjectIndices(projectPath: string, useCache: boolean): Promi
           try {
             // Using dynamic import for consistency and to avoid require() issues
             const indexersModule = await import('./indexers');
-            const graph = await indexersModule.buildImportGraph(files) as
+            const graph = (await indexersModule.buildImportGraph(files)) as
               | Map<string, string[]>
               | Record<string, string[]>;
             const entries: { file: string; imports: string[] }[] = [];

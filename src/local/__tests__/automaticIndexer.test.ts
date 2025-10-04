@@ -21,7 +21,7 @@ jest.mock('sqlite3', () => ({
 jest.mock('fs');
 jest.mock('fs/promises');
 jest.mock('globby', () => ({
-  globby: jest.fn()
+  globby: jest.fn(),
 }));
 jest.mock('../../client/apiClient', () => ({
   apiClient: {
@@ -29,7 +29,7 @@ jest.mock('../../client/apiClient', () => ({
     post: jest.fn(),
     put: jest.fn(),
     delete: jest.fn(),
-  }
+  },
 }));
 jest.mock('../../utils/logger');
 jest.mock('../projectIdentifier');
@@ -44,18 +44,14 @@ const mockLogger = {
   debug: jest.fn() as jest.MockedFunction<any>,
 };
 
-    // Import the mocked apiClient
+// Import the mocked apiClient
 const { apiClient: mockApiClient } = require('../../client/apiClient');
 
-    // Import the mocked loadIgnorePatterns
+// Import the mocked loadIgnorePatterns
 const { loadIgnorePatterns: mockLoadIgnorePatternsImported } = require('../projectIdentifier');
 
-    // Set up the mock for loadIgnorePatterns
-    mockLoadIgnorePatternsImported.mockResolvedValue([
-      'node_modules/**',
-      'dist/**',
-      '.git/**',
-    ]);
+// Set up the mock for loadIgnorePatterns
+mockLoadIgnorePatternsImported.mockResolvedValue(['node_modules/**', 'dist/**', '.git/**']);
 
 // Mock project identifier
 const mockProjectIdentifier = {
@@ -153,7 +149,10 @@ describe('AutomaticIndexer', () => {
     it('should detect project and start indexing', async () => {
       // Mock globby to return some files
       const { globby } = await import('globby');
-      (globby as jest.MockedFunction<any>).mockResolvedValue(['/test/project/src/index.ts', '/test/project/src/utils.ts']);
+      (globby as jest.MockedFunction<any>).mockResolvedValue([
+        '/test/project/src/index.ts',
+        '/test/project/src/utils.ts',
+      ]);
 
       const session = await indexer.autoDetectAndIndex();
 
@@ -435,15 +434,14 @@ describe('AutomaticIndexer', () => {
 
   describe('ignore patterns', () => {
     it('should apply ignore patterns correctly', async () => {
-      mockLoadIgnorePatternsImported.mockResolvedValue([
-        'node_modules/**',
-        '*.log',
-        'dist/**',
-      ]);
+      mockLoadIgnorePatternsImported.mockResolvedValue(['node_modules/**', '*.log', 'dist/**']);
 
       const globbyModule = await import('globby');
       const mockGlobby = globbyModule.globby;
-      (mockGlobby as jest.MockedFunction<any>).mockResolvedValue(['/test/project/src/index.ts', '/test/project/src/utils.ts']);
+      (mockGlobby as jest.MockedFunction<any>).mockResolvedValue([
+        '/test/project/src/index.ts',
+        '/test/project/src/utils.ts',
+      ]);
 
       await indexer.indexProject('/test/project');
 

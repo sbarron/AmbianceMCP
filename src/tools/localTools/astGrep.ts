@@ -16,6 +16,7 @@ import { spawn } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { validateAndResolvePath } from '../utils/pathUtils';
 import { logger } from '../../utils/logger';
@@ -135,7 +136,7 @@ npx ast-grep --help
 - Automatically respects .gitignore files for exclusions
 - For additional exclusions, configure .gitignore in your project
 
-**Tips for Large Projects (like D:\Dev\SWE-agent):**
+**Tips for Large Projects (like D:\\Dev\\SWE-agent):**
 - Use filePattern to search specific directories: "src/**/*.py"
 - Add large directories to .gitignore: node_modules/, tests/, docs/, etc.
 - Consider CLI usage for better performance: npx ast-grep --pattern "import json" --lang py src/**/*.py
@@ -146,7 +147,22 @@ npx ast-grep --help
       pattern: {
         type: 'string',
         description:
-          'AST pattern, not regex. Use $UPPERCASE wildcards. Examples: "$FUNC($ARGS)", "new $CLASS($ARGS)", "import $NAME from \"express\""',
+          'AST pattern, not regex. Use $UPPERCASE wildcards. Examples: "$FUNC($ARGS)", "new $CLASS($ARGS)", "import $NAME from "express""',
+      },
+      rulePath: {
+        type: 'string',
+        description:
+          'Path to an ast-grep rule file (YAML/JSON). When provided, rule mode is used instead of pattern.',
+      },
+      ruleYaml: {
+        type: 'string',
+        description:
+          'Inline ast-grep rule content in YAML (JSON is also valid YAML). Will be written to a temp file and used with --rule.',
+      },
+      ruleJson: {
+        type: 'object',
+        description:
+          'Inline ast-grep rule object (JSON). Optionally validated against local schemas and written to a temp file for --rule.',
       },
       projectPath: {
         type: 'string',
@@ -209,7 +225,7 @@ npx ast-grep --help
         items: { type: 'string' },
       },
     },
-    required: ['pattern', 'projectPath'],
+    required: ['projectPath'],
   },
 };
 
@@ -286,11 +302,14 @@ export function validateAstGrepPattern(pattern: string): PatternValidationResult
   if (
     trimmedPattern.includes('def $NAME($ARGS):') ||
     trimmedPattern.includes('def $name($args):') ||
-    (trimmedPattern.startsWith('def ') && trimmedPattern.includes('$') && trimmedPattern.includes(':'))
+    (trimmedPattern.startsWith('def ') &&
+      trimmedPattern.includes('$') &&
+      trimmedPattern.includes(':'))
   ) {
     return {
       isValid: false,
-      error: 'Complex Python function definition patterns with metavariables may not work correctly in ast-grep',
+      error:
+        'Complex Python function definition patterns with metavariables may not work correctly in ast-grep',
       suggestions: [
         'Use simple patterns: "def " for function definitions',
         'Example: "def " instead of "def $NAME($ARGS):"',
@@ -322,15 +341,15 @@ export function validateAstGrepPattern(pattern: string): PatternValidationResult
     };
   }
 
-    // Check for ambiguous patterns that ast-grep can't parse
-    const ambiguousPatterns = [
-      /^export\s+\$[A-Z_]+$/,
-      /^import\s+\$[A-Z_]+$/,
-      /^function\s+\$[A-Z_]+$/,
-      /^class\s+\$[A-Z_]+$/,
-      /^\$[A-Z_]+\s*$/,
-      /^export\s+default\s+\$[A-Z_]+$/,
-    ];
+  // Check for ambiguous patterns that ast-grep can't parse
+  const ambiguousPatterns = [
+    /^export\s+\$[A-Z_]+$/,
+    /^import\s+\$[A-Z_]+$/,
+    /^function\s+\$[A-Z_]+$/,
+    /^class\s+\$[A-Z_]+$/,
+    /^\$[A-Z_]+\s*$/,
+    /^export\s+default\s+\$[A-Z_]+$/,
+  ];
 
   for (const ambiguousPattern of ambiguousPatterns) {
     if (ambiguousPattern.test(trimmedPattern)) {
@@ -357,21 +376,27 @@ export function validateAstGrepPattern(pattern: string): PatternValidationResult
   let warning: string | undefined;
   for (const genericPattern of tooGenericPatterns) {
     if (genericPattern.test(trimmedPattern)) {
-      warning = 'Pattern "' + trimmedPattern + '" is very generic and may not match expected code structures';
+      warning =
+        'Pattern "' +
+        trimmedPattern +
+        '" is very generic and may not match expected code structures';
       break;
     }
   }
 
-    // Check for patterns missing metavariables when they should have them
-    const patternsNeedingMetavariables = [
-      {
-        regex: /^export\s+(const|let|var|function|class|interface|type)\s+[^$]/,
-        suggestion: 'Use metavariables like $NAME for the exported identifier',
-      },
-      { regex: /^function\s+[^$]/, suggestion: 'Use $NAME for the function name' },
-      { regex: /^class\s+[^$]/, suggestion: 'Use $NAME for the class name and $BASE for inheritance' },
-      { regex: /^import\s+[^$]/, suggestion: 'Use $NAME for the imported identifier' },
-    ];
+  // Check for patterns missing metavariables when they should have them
+  const patternsNeedingMetavariables = [
+    {
+      regex: /^export\s+(const|let|var|function|class|interface|type)\s+[^$]/,
+      suggestion: 'Use metavariables like $NAME for the exported identifier',
+    },
+    { regex: /^function\s+[^$]/, suggestion: 'Use $NAME for the function name' },
+    {
+      regex: /^class\s+[^$]/,
+      suggestion: 'Use $NAME for the class name and $BASE for inheritance',
+    },
+    { regex: /^import\s+[^$]/, suggestion: 'Use $NAME for the imported identifier' },
+  ];
 
   const suggestions: string[] = [];
   for (const patternCheck of patternsNeedingMetavariables) {
@@ -394,42 +419,70 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
   const startTime = Date.now();
 
   try {
-    // Early validation: comprehensive pattern validation
-    if (typeof args.pattern !== 'string' || !args.pattern.trim()) {
-      throw new Error('Pattern must be a non-empty string containing an AST pattern (not regex).');
-    }
+    // Support rule-based execution path in addition to pattern
+    const hasRuleInput = !!(args.rulePath || args.ruleYaml || args.ruleJson);
+    let pattern: string | undefined;
+    let ruleFilePath: string | undefined;
+    let tempRule: string | null = null;
+    const languageToUse = args.language || inferLanguageFromArgs(args);
 
-    const pattern = String(args.pattern);
-    const validation = validateAstGrepPattern(pattern);
+    if (hasRuleInput) {
+      const prepared = await prepareRuleFile(args);
+      ruleFilePath = prepared.ruleFilePath;
+      tempRule = prepared.isTemporary ? prepared.ruleFilePath : null;
 
-    if (!validation.isValid) {
-      const errorMessage = validation.error || 'Invalid AST pattern';
-      const suggestions = validation.suggestions || [];
-      const fullMessage = errorMessage + (suggestions.length > 0 ? '\n\nSuggestions:\n' + suggestions.map(s => '• ' + s).join('\n') : '');
-      throw new Error(fullMessage);
-    }
+      if (prepared.validationErrors && prepared.validationErrors.length > 0) {
+        const message =
+          'Rule schema validation failed:\n' +
+          prepared.validationErrors.map((m: string) => '• ' + m).join('\n');
+        throw new Error(message);
+      }
+    } else {
+      // Early validation: comprehensive pattern validation
+      if (typeof args.pattern !== 'string' || !args.pattern.trim()) {
+        throw new Error(
+          'Pattern must be a non-empty string containing an AST pattern (not regex).'
+        );
+      }
 
-    // Log warnings for potentially problematic patterns
-    if (validation.warning) {
-      logger.warn('⚠️ Potentially problematic AST pattern', {
-        pattern,
-        warning: validation.warning,
-        suggestions: validation.suggestions,
-      });
-    }
+      pattern = String(args.pattern);
+      const validation = validateAstGrepPattern(pattern);
 
-    // Log suggestions for improvement
-    if (validation.suggestions && validation.suggestions.length > 0) {
-      logger.info('💡 Pattern suggestions available', {
-        pattern,
-        suggestions: validation.suggestions,
-      });
+      if (!validation.isValid) {
+        const errorMessage = validation.error || 'Invalid AST pattern';
+        const suggestions = validation.suggestions || [];
+        const fullMessage =
+          errorMessage +
+          (suggestions.length > 0
+            ? '\n\nSuggestions:\n' + suggestions.map(s => '• ' + s).join('\n')
+            : '');
+        throw new Error(fullMessage);
+      }
+
+      // Log warnings for potentially problematic patterns
+      if (validation.warning) {
+        logger.warn('⚠️ Potentially problematic AST pattern', {
+          pattern,
+          warning: validation.warning,
+          suggestions: validation.suggestions,
+        });
+      }
+
+      // Log suggestions for improvement
+      if (validation.suggestions && validation.suggestions.length > 0) {
+        logger.info('💡 Pattern suggestions available', {
+          pattern,
+          suggestions: validation.suggestions,
+        });
+      }
     }
 
     logger.info('🔍 Executing ast-grep search', {
+      mode: hasRuleInput ? 'rule' : 'pattern',
       pattern,
+      ruleFilePath,
       projectPath: args.projectPath,
-      language: args.language,
+      language: languageToUse,
       filePattern: args.filePattern,
     });
 
@@ -439,8 +492,9 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
     // Execute ast-grep command
     const result = await executeAstGrep({
       pattern,
+      ruleFilePath,
       projectPath,
-      language: args.language,
+      language: languageToUse,
       filePattern: args.filePattern,
       maxMatches: args.maxMatches || 100,
       includeContext: args.includeContext !== false,
@@ -456,11 +510,18 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
       executionTime,
     });
 
+    // Clean up temp rule if created
+    if (tempRule) {
+      try {
+        await fs.unlink(tempRule);
+      } catch {}
+    }
+
     return {
       ...result,
       executionTime,
-      pattern,
-      language: args.language,
+      pattern: pattern ?? '(rule)',
+      language: languageToUse,
     };
   } catch (error) {
     const executionTime = Date.now() - startTime;
@@ -487,7 +548,8 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
  * Execute ast-grep command with specified options
  */
 export async function executeAstGrep(options: {
-  pattern: string;
+  pattern?: string;
+  ruleFilePath?: string;
   projectPath: string;
   language?: string;
   filePattern?: string;
@@ -502,22 +564,28 @@ export async function executeAstGrep(options: {
     const cliArgs: string[] = [];
 
     try {
-      logger.debug('Adding pattern to args', {
-        pattern: options.pattern,
-        patternType: typeof options.pattern,
-        patternLength: options.pattern.length,
-      });
+      // Use rule file if provided; otherwise fall back to pattern
+      if (options.ruleFilePath) {
+        logger.debug('Using ast-grep rule file', { ruleFilePath: options.ruleFilePath });
+        cliArgs.push('--rule', options.ruleFilePath);
+      } else {
+        logger.debug('Adding pattern to args', {
+          pattern: options.pattern,
+          patternType: typeof options.pattern,
+          patternLength: (options.pattern || '').length,
+        });
 
-      // Double-check the pattern before adding to args
-      if (!options.pattern || options.pattern.trim() === '') {
-        throw new Error('Pattern is empty or undefined');
+        // Double-check the pattern before adding to args
+        if (!options.pattern || options.pattern.trim() === '') {
+          throw new Error('Pattern is empty or undefined');
+        }
+
+        logger.debug('Adding pattern to ast-grep arguments', {
+          pattern: options.pattern,
+          patternLength: options.pattern.length,
+        });
+        cliArgs.push('--pattern', options.pattern);
       }
-
-      logger.debug('Adding pattern to ast-grep arguments', {
-        pattern: options.pattern,
-        patternLength: options.pattern.length
-      });
-      cliArgs.push('--pattern', options.pattern);
 
       if (options.language) {
         cliArgs.push('--lang', options.language);
@@ -539,11 +607,14 @@ export async function executeAstGrep(options: {
         // Note: ast-grep respects .gitignore files by default, which provides most exclusions
         // For additional exclusions, users should configure .gitignore in their project
         cliArgs.push('.');
-        logger.debug('Using default .gitignore-based exclusions (ast-grep does not support --exclude-dir flags)');
+        logger.debug(
+          'Using default .gitignore-based exclusions (ast-grep does not support --exclude-dir flags)'
+        );
       }
 
       logger.info('Executing ast-grep search', {
         pattern: options.pattern,
+        ruleFilePath: options.ruleFilePath,
         language: options.language,
         projectPath: options.projectPath,
         maxMatches: options.maxMatches,
@@ -560,12 +631,12 @@ export async function executeAstGrep(options: {
           path: options.projectPath,
           isDirectory: stats.isDirectory(),
           readable: true,
-          size: stats.size
+          size: stats.size,
         });
       } catch (error) {
         logger.error('Project path does not exist or is not accessible', {
           path: options.projectPath,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
         throw new Error('Project path does not exist or is not accessible: ' + options.projectPath);
       }
@@ -580,7 +651,6 @@ export async function executeAstGrep(options: {
       // Log the command being executed
       const fullCommand = 'npx ast-grep ' + cliArgs.join(' ');
       logger.debug('Executing ast-grep command:', { command: fullCommand });
-
 
       let astGrep: ReturnType<typeof spawn> | null = null;
       let executionMethod = 'unknown';
@@ -670,7 +740,9 @@ export async function executeAstGrep(options: {
             cwd: options.projectPath,
             nodeVersion: process.version,
           });
-          throw new Error('All spawn approaches failed: ' + (lastError?.message || 'Unknown error'));
+          throw new Error(
+            'All spawn approaches failed: ' + (lastError?.message || 'Unknown error')
+          );
         }
       }
 
@@ -704,7 +776,11 @@ export async function executeAstGrep(options: {
         });
 
         if (code !== 0 && code !== null) {
-          reject(new Error('ast-grep exited with code ' + code + ': ' + (stderr || 'No error message provided')));
+          reject(
+            new Error(
+              'ast-grep exited with code ' + code + ': ' + (stderr || 'No error message provided')
+            )
+          );
           return;
         }
 
@@ -722,14 +798,14 @@ export async function executeAstGrep(options: {
           resolve({
             ...matches,
             executionTime: Date.now() - startTime,
-            pattern: options.pattern,
+            pattern: options.pattern || (options.ruleFilePath ? '(rule)' : ''),
             language: options.language,
           });
         } catch (parseError) {
           reject(
             new Error(
-            'Failed to parse ast-grep output: ' +
-              (parseError instanceof Error ? parseError.message : String(parseError))
+              'Failed to parse ast-grep output: ' +
+                (parseError instanceof Error ? parseError.message : String(parseError))
             )
           );
         }
@@ -740,12 +816,13 @@ export async function executeAstGrep(options: {
       const activityInterval = setInterval(() => {
         const now = Date.now();
         const timeSinceLastActivity = now - lastActivity;
-        if (timeSinceLastActivity > 5000) { // Log every 5 seconds of inactivity
+        if (timeSinceLastActivity > 5000) {
+          // Log every 5 seconds of inactivity
           logger.debug('ast-grep process still running', {
             executionTime: now - startTime,
             timeSinceLastActivity,
             executionMethod,
-            cwd: options.projectPath
+            cwd: options.projectPath,
           });
         }
       }, 5000);
@@ -758,7 +835,7 @@ export async function executeAstGrep(options: {
           logger.debug('ast-grep stdout chunk', {
             chunkLength: chunk.length,
             totalStdoutLength: stdout.length,
-            executionTime: Date.now() - startTime
+            executionTime: Date.now() - startTime,
           });
         }
       });
@@ -771,7 +848,7 @@ export async function executeAstGrep(options: {
           logger.debug('ast-grep stderr chunk', {
             chunkLength: chunk.length,
             totalStderrLength: stderr.length,
-            executionTime: Date.now() - startTime
+            executionTime: Date.now() - startTime,
           });
         }
       });
@@ -790,7 +867,13 @@ export async function executeAstGrep(options: {
         });
         reject(
           new Error(
-            'Failed to spawn ast-grep (' + executionMethod + '): ' + processError.message + ' (code: ' + (processError as any).code + '). Make sure @ast-grep/cli is installed and accessible.'
+            'Failed to spawn ast-grep (' +
+              executionMethod +
+              '): ' +
+              processError.message +
+              ' (code: ' +
+              (processError as any).code +
+              '). Make sure @ast-grep/cli is installed and accessible.'
           )
         );
       });
@@ -800,7 +883,11 @@ export async function executeAstGrep(options: {
         if (astGrep) {
           astGrep.kill();
         }
-        reject(new Error('ast-grep search timed out after 30 seconds. For large projects, consider using filePattern to search specific directories (e.g., "src/**/*.py") or excludePatterns to exclude large directories.'));
+        reject(
+          new Error(
+            'ast-grep search timed out after 30 seconds. For large projects, consider using filePattern to search specific directories (e.g., "src/**/*.py") or excludePatterns to exclude large directories.'
+          )
+        );
       }, 30000);
     } catch (error) {
       logger.error('Failed to execute ast-grep', {
@@ -1037,4 +1124,133 @@ function buildShellCommand(cmd: string, args: string[]): string {
     return "'" + s.replace(/'/g, "'\\''") + "'";
   };
   return cmd + ' ' + args.map(a => (a.startsWith('--') ? a : quote(a))).join(' ');
+}
+
+// Prepare a rule file based on args (rulePath | ruleYaml | ruleJson).
+async function prepareRuleFile(
+  args: any
+): Promise<{ ruleFilePath: string; isTemporary: boolean; validationErrors?: string[] }> {
+  if (args.rulePath && typeof args.rulePath === 'string') {
+    return { ruleFilePath: args.rulePath, isTemporary: false };
+  }
+
+  if (args.ruleYaml && typeof args.ruleYaml === 'string') {
+    const tempPath = await writeTempRuleFile(args.ruleYaml, '.yaml');
+    return { ruleFilePath: tempPath, isTemporary: true };
+  }
+
+  if (args.ruleJson && typeof args.ruleJson === 'object') {
+    const validation = validateRuleJson(args.ruleJson, args.language);
+    if (validation && validation.length > 0) {
+      return { ruleFilePath: '', isTemporary: true, validationErrors: validation };
+    }
+    const content = JSON.stringify(args.ruleJson, null, 2);
+    const tempPath = await writeTempRuleFile(content, '.json');
+    return { ruleFilePath: tempPath, isTemporary: true };
+  }
+
+  return {
+    ruleFilePath: '',
+    isTemporary: true,
+    validationErrors: ['No rulePath, ruleYaml, or ruleJson provided'],
+  };
+}
+
+async function writeTempRuleFile(
+  content: string,
+  ext: '.yaml' | '.yml' | '.json'
+): Promise<string> {
+  const tmpDir = require('os').tmpdir();
+  const p = require('path');
+  const filePath = p.join(
+    tmpDir,
+    'astgrep-rule-' + Date.now() + Math.random().toString(36).slice(2) + ext
+  );
+  await fs.writeFile(filePath, content, 'utf-8');
+  return filePath;
+}
+
+function validateRuleJson(ruleJson: unknown, language?: string): string[] | null {
+  try {
+    if (!ruleJson || typeof ruleJson !== 'object') {
+      return ['Rule JSON must be an object'];
+    }
+
+    // Try to use Ajv for full schema validation if available, otherwise minimal checks.
+    const ajv = tryLoadAjv();
+    const schema = loadSchemaForLanguage(language);
+    if (ajv && schema) {
+      const validate = ajv.compile(schema);
+      const valid = validate(ruleJson);
+      if (!valid) {
+        const errs = (validate.errors || []).map((e: any) =>
+          `${e.instancePath || '(root)'} ${e.message || ''}`.trim()
+        );
+        return errs.length > 0 ? errs : ['Rule JSON does not conform to schema'];
+      }
+      return null;
+    }
+
+    const errs: string[] = [];
+    if (schema && Array.isArray(schema.required)) {
+      for (const key of schema.required) {
+        if (!(key in (ruleJson as any))) {
+          errs.push('Missing required field: ' + key);
+        }
+      }
+    }
+    return errs.length > 0 ? errs : null;
+  } catch {
+    return null;
+  }
+}
+
+function inferLanguageFromArgs(args: any): string | undefined {
+  if (typeof args.language === 'string' && args.language.trim()) return args.language;
+  const fp = typeof args.filePattern === 'string' ? String(args.filePattern) : '';
+  if (/(^|\.)tsx?$/.test(fp) || /\.tsx(\b|$)/i.test(fp)) return 'ts';
+  if (/\.jsx(\b|$)/i.test(fp)) return 'js';
+  if (/\.py(\b|$)/i.test(fp)) return 'py';
+  if (/\.rs(\b|$)/i.test(fp)) return 'rs';
+  if (/\.go(\b|$)/i.test(fp)) return 'go';
+  if (/\.(c|h)(\b|$)/i.test(fp)) return 'c';
+  if (/\.(cpp|cc|cxx|hpp|hh)(\b|$)/i.test(fp)) return 'cpp';
+  if (/\.java(\b|$)/i.test(fp)) return 'java';
+  if (/\.php(\b|$)/i.test(fp)) return 'php';
+  if (/\.(rb|ruby)(\b|$)/i.test(fp)) return 'rb';
+  if (/\.kt(\b|$)/i.test(fp)) return 'kt';
+  if (/\.swift(\b|$)/i.test(fp)) return 'swift';
+  return undefined;
+}
+
+function loadSchemaForLanguage(language?: string): any | null {
+  try {
+    const p = require('path');
+    const fsNative = require('fs');
+    const base = p.join(__dirname, 'schemas');
+    let file = 'rule.json';
+    const lang = (language || '').toLowerCase();
+    if (lang === 'ts' || lang === 'typescript') file = 'typescript_rule.json';
+    else if (lang === 'tsx') file = 'tsx_rule.json';
+    else if (lang === 'js' || lang === 'javascript') file = 'javascript_rule.json';
+    else if (lang === 'py' || lang === 'python') file = 'python_rule.json';
+    const full = p.join(base, file);
+    if (!fsNative.existsSync(full)) return null;
+    return JSON.parse(fs.readFile(full, 'utf-8') as unknown as string);
+  } catch {
+    return null;
+  }
+}
+
+function tryLoadAjv(): any | null {
+  try {
+    // Lazy require; Ajv may not be installed in all environments
+    // If absent, we fall back to minimal checks
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const Ajv = require('ajv');
+    // coerceTypes not needed; draft-2020 supported by Ajv v8+
+    return new Ajv({ allErrors: true, strict: false });
+  } catch {
+    return null;
+  }
 }

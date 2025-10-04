@@ -142,8 +142,8 @@ export const localDebugContextTool = {
       },
       projectPath: {
         type: 'string',
-        description: 'Project root directory (optional, defaults to current working directory)',
-        default: process.cwd(),
+        description:
+          'Project root directory path. Required. Can be absolute or relative to workspace.',
       },
       maxMatches: {
         type: 'number',
@@ -186,7 +186,7 @@ export const localDebugContextTool = {
           "Generate embeddings for project files if they don't exist (may take time for large projects)",
       },
     },
-    required: ['logText'],
+    required: ['logText', 'projectPath'],
   },
 };
 

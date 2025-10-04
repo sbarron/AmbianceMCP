@@ -56,11 +56,9 @@ export class AutoIndexingStartup {
     // Defer any authentication or filesystem work until workspace has been explicitly configured
     const workspaceInitialized = process.env.WORKSPACE_INITIALIZED === 'true';
     if (!workspaceInitialized) {
+      logger.info('⏸️ Auto-indexing deferred until workspace is configured (first run)');
       logger.info(
-        '⏸️ Auto-indexing deferred until workspace_config sets the workspace folder (first run)'
-      );
-      logger.info(
-        '💡 Run workspace_config { action: "set", path: "<your project path>" } to enable indexing'
+        '💡 Run manage_embeddings { action: "set_workspace", projectPath: "<your project path>" } to enable indexing'
       );
       AutoIndexingStartup.initializing = false;
       return;
@@ -85,7 +83,7 @@ export class AutoIndexingStartup {
           '⚠️ WORKSPACE_FOLDER environment variable not set - skipping automatic indexing'
         );
         logger.info(
-          '💡 Set WORKSPACE_FOLDER environment variable or call workspace_config tool to enable automatic indexing'
+          '💡 Set WORKSPACE_FOLDER environment variable or call manage_embeddings (action: set_workspace) to enable automatic indexing'
         );
         logger.info('🔧 This prevents indexing system directories like user home folder');
 

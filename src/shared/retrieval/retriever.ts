@@ -64,16 +64,16 @@ export class SharedRetriever implements Retriever {
           // Essential fallback facets to maintain basic functionality
           general: {
             seeds: ['function', 'class', 'const', 'let', 'var', 'import', 'export'],
-            description: 'General code patterns and structures'
+            description: 'General code patterns and structures',
           },
           data: {
             seeds: ['database', 'table', 'query', 'model', 'schema'],
-            description: 'Data operations and database interactions'
+            description: 'Data operations and database interactions',
           },
           auth: {
             seeds: ['auth', 'login', 'token', 'session', 'user'],
-            description: 'Authentication and user management'
-          }
+            description: 'Authentication and user management',
+          },
         },
         retrieval: {
           perFacetCap: { general: 8, data: 4, auth: 3 },
@@ -84,7 +84,7 @@ export class SharedRetriever implements Retriever {
             'dist/': 0.2,
             'build/': 0.2,
             '*.min.js': 0.3,
-            '*.map': 0.3
+            '*.map': 0.3,
           },
           maxRetries: 3,
           timeoutMs: 5000,
@@ -92,7 +92,7 @@ export class SharedRetriever implements Retriever {
         anchors: {
           general: ['function', 'class', 'const'],
           data: ['database', 'query'],
-          auth: ['auth', 'login']
+          auth: ['auth', 'login'],
         },
       };
     }

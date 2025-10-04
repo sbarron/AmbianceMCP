@@ -48,6 +48,11 @@ export interface EnhancedContextResult {
       totalEmbeddings: number;
       searchTime: number;
     };
+    embeddingGenerationStatus?: {
+      isGenerating: boolean;
+      message: string;
+      startedAt?: Date;
+    };
   };
 }
 
@@ -194,11 +199,26 @@ Try using a more specific directory or check the project path.`;
       }
 
       const totalTime = Date.now() - startTime;
+
+      // Add embedding generation status to metadata
+      const { getBackgroundEmbeddingManager } = await import('./backgroundEmbeddingManager');
+      const bgManager = getBackgroundEmbeddingManager();
+      const generationStatus = bgManager.getGenerationStatus(projectId);
+
+      if (generationStatus?.isGenerating) {
+        result.metadata.embeddingGenerationStatus = {
+          isGenerating: true,
+          message: `Embeddings are being generated in the background (started ${Math.round((Date.now() - generationStatus.startedAt!.getTime()) / 1000)}s ago)`,
+          startedAt: generationStatus.startedAt,
+        };
+      }
+
       logger.info('✅ Enhanced context generation completed', {
         tokenCount: result.metadata.tokenCount,
         embeddingsUsed: result.metadata.embeddingsUsed,
         similarChunks: result.metadata.similarChunksFound,
         processingTime: `${totalTime}ms`,
+        embeddingGenerationInProgress: generationStatus?.isGenerating || false,
       });
 
       return result;
@@ -249,7 +269,22 @@ Try using a more specific directory or check the project path.`;
     }
 
     if (!stats || stats.totalChunks === 0) {
-      logger.info('📭 No embeddings found for project', { projectId });
+      // Check if generation is in progress
+      const { getBackgroundEmbeddingManager } = await import('./backgroundEmbeddingManager');
+      const bgManager = getBackgroundEmbeddingManager();
+      const generationStatus = bgManager.getGenerationStatus(projectId);
+
+      if (generationStatus?.isGenerating) {
+        logger.info('⏳ Embeddings generation in progress - using fallback context', {
+          projectId,
+          startedAt: generationStatus.startedAt,
+          elapsedSeconds: Math.round((Date.now() - generationStatus.startedAt!.getTime()) / 1000),
+        });
+      } else {
+        logger.info('📭 No embeddings found for project (will be generated in background)', {
+          projectId,
+        });
+      }
       return null;
     }
 
@@ -443,13 +478,18 @@ Try using a more specific directory or check the project path.`;
   }
 
   /**
-   * Ensure embeddings exist for the project
+   * Ensure embeddings exist for the project (non-blocking)
+   * Triggers background generation if needed but doesn't wait for completion
    */
   private async ensureEmbeddings(
     projectId: string,
     projectPath: string,
     options: EnhancedContextOptions
   ): Promise<void> {
+    // Import background manager dynamically to avoid circular dependencies
+    const { getBackgroundEmbeddingManager } = await import('./backgroundEmbeddingManager');
+    const bgManager = getBackgroundEmbeddingManager();
+
     // Proceed with generation as long as local storage is enabled
     if (!LocalEmbeddingStorage.isEnabled()) {
       logger.info('💡 Embedding generation not available - local storage disabled');
@@ -459,26 +499,31 @@ Try using a more specific directory or check the project path.`;
     // Check if embeddings exist
     const stats = await this.embeddingStorage.getProjectStats(projectId);
 
-    if (!stats && options.generateEmbeddingsIfMissing !== false) {
-      logger.info('🏗️ Generating embeddings for project (first time)', { projectId });
+    // Check if currently generating
+    const isGenerating = bgManager.isGenerating(projectId);
 
-      const progress = await this.embeddingGenerator.generateProjectEmbeddings(
-        projectId,
-        projectPath,
-        {
-          batchSize: 10,
-          rateLimit: 1000,
-          maxChunkSize: 1500,
-          ...options.embeddingOptions,
-        }
-      );
+    if (!stats && options.generateEmbeddingsIfMissing !== false && !isGenerating) {
+      // Trigger background generation (non-blocking)
+      const result = await bgManager.triggerEmbeddingGeneration(projectPath, {
+        batchSize: 10,
+        rateLimit: 1000,
+      });
 
-      logger.info('✅ Initial embedding generation completed', {
+      if (result.started) {
+        logger.info('🚀 Background embedding generation triggered (non-blocking)', {
+          projectId,
+          projectPath,
+        });
+      } else {
+        logger.debug('ℹ️ Embedding generation not started', {
+          projectId,
+          reason: result.reason,
+        });
+      }
+    } else if (isGenerating) {
+      logger.info('⏳ Embeddings are currently being generated in the background', {
         projectId,
-        embeddings: progress.embeddings,
-        chunks: progress.totalChunks,
-        files: progress.totalFiles,
-        errors: progress.errors.length,
+        status: bgManager.getGenerationStatus(projectId),
       });
     } else if (stats) {
       logger.debug('📊 Using existing embeddings', {

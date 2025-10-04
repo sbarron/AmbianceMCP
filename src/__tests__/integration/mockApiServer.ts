@@ -73,7 +73,7 @@ export class MockApiServer {
         encoding_format: 'float32',
         total_tokens: texts.join(' ').split(' ').length,
         processing_time_ms: Math.floor(Math.random() * 100) + 50,
-        provider: 'voyageai'
+        provider: 'voyageai',
       });
     });
 
@@ -102,13 +102,13 @@ export class MockApiServer {
             language: 'typescript',
             path: 'src/test.ts',
             startLine: 1,
-            endLine: 10
+            endLine: 10,
           },
           score: 0.95,
           path: 'src/test.ts',
           startLine: 1,
-          endLine: 10
-        }
+          endLine: 10,
+        },
       ]);
     });
 
@@ -138,24 +138,24 @@ export class MockApiServer {
               language: 'typescript',
               path: 'src/test.ts',
               startLine: 1,
-              endLine: 10
+              endLine: 10,
             },
             score: 0.9,
             path: 'src/test.ts',
             startLine: 1,
-            endLine: 10
-          }
+            endLine: 10,
+          },
         ],
         budget: {
           requested: 4000,
           used: 150,
-          remaining: 3850
+          remaining: 3850,
         },
         metadata: {
           query: req.body.query || 'test query',
           repos: ['test-repo'],
-          timestamp: new Date().toISOString()
-        }
+          timestamp: new Date().toISOString(),
+        },
       });
     });
   }
@@ -174,7 +174,7 @@ export class MockApiServer {
   }
 
   async stop(): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
       if (this.server) {
         this.server.close(() => {
           resolve();

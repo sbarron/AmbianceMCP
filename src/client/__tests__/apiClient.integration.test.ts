@@ -1,7 +1,8 @@
 import { AmbianceAPIClient } from '../../client/apiClient';
 
 const API_KEY = process.env.AMBIANCE_API_KEY || '';
-const API_URL = process.env.AMBIANCE_API_URL || process.env.USING_LOCAL_SERVER_URL || 'http://localhost:3001';
+const API_URL =
+  process.env.AMBIANCE_API_URL || process.env.USING_LOCAL_SERVER_URL || 'http://localhost:3001';
 
 const itIf = (cond: boolean) => (cond ? it : it.skip);
 
@@ -26,5 +27,3 @@ describe('Ambiance API Client Integration (skips without AMBIANCE_API_KEY)', () 
     expect(Array.isArray(results)).toBe(true);
   });
 });
-
-

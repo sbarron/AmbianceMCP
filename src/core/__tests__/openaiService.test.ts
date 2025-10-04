@@ -63,7 +63,13 @@ describe('OpenAIService', () => {
 
       await service.createChatCompletion({
         model: 'qwen-plus',
-        messages: [{ role: 'user', content: 'This is a comprehensive test message with sufficient content to pass validation. It contains multiple sentences and provides meaningful context for testing the OpenAI service temperature override functionality for the Qwen provider.' }],
+        messages: [
+          {
+            role: 'user',
+            content:
+              'This is a comprehensive test message with sufficient content to pass validation. It contains multiple sentences and provides meaningful context for testing the OpenAI service temperature override functionality for the Qwen provider.',
+          },
+        ],
         temperature: 0.7, // This should be overridden
       });
 
@@ -83,7 +89,13 @@ describe('OpenAIService', () => {
 
       await service.createChatCompletion({
         model: 'qwen-plus',
-        messages: [{ role: 'user', content: 'This is a comprehensive test message with sufficient content to pass validation. We are testing the max_tokens limit functionality to ensure that it respects the model constraints.' }],
+        messages: [
+          {
+            role: 'user',
+            content:
+              'This is a comprehensive test message with sufficient content to pass validation. We are testing the max_tokens limit functionality to ensure that it respects the model constraints.',
+          },
+        ],
         max_tokens: 50000, // This exceeds Qwen's limit
       });
 
@@ -135,7 +147,13 @@ describe('OpenAIService', () => {
 
       await service.createChatCompletion({
         model: 'gpt-4o',
-        messages: [{ role: 'user', content: 'This is a comprehensive test message with sufficient content to pass validation. We are testing that the OpenAI provider preserves the temperature setting without modification.' }],
+        messages: [
+          {
+            role: 'user',
+            content:
+              'This is a comprehensive test message with sufficient content to pass validation. We are testing that the OpenAI provider preserves the temperature setting without modification.',
+          },
+        ],
         temperature: 0.7, // This should be preserved
       });
 
@@ -571,7 +589,13 @@ describe('OpenAIService', () => {
       await expect(
         service.createChatCompletion({
           model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content: 'This is a comprehensive test message with sufficient content to pass validation. We are testing API error handling to ensure that rate limit errors are properly propagated.' }],
+          messages: [
+            {
+              role: 'user',
+              content:
+                'This is a comprehensive test message with sufficient content to pass validation. We are testing API error handling to ensure that rate limit errors are properly propagated.',
+            },
+          ],
         })
       ).rejects.toThrow(errorMessage);
     });

@@ -142,8 +142,13 @@ export class ProjectIdentifier {
    */
   private async analyzeProject(projectPath: string): Promise<ProjectInfo> {
     const absolutePath = normalizePathForId(projectPath);
-    const isGit = await this.isGitRepository(absolutePath);
-    const gitInfo = isGit ? await this.getGitInfo(absolutePath) : undefined;
+
+    // Find workspace root first (could be the project itself or a parent)
+    const workspaceRoot = await this.findWorkspaceRoot(absolutePath);
+
+    // Check if workspace root is a git repository
+    const isWorkspaceGit = await this.isGitRepository(workspaceRoot);
+    const gitInfo = isWorkspaceGit ? await this.getGitInfo(workspaceRoot) : undefined;
 
     // Determine project name
     let projectName = path.basename(absolutePath);
@@ -155,17 +160,14 @@ export class ProjectIdentifier {
       }
     }
 
-    // Find workspace root (could be the project itself or a parent)
-    const workspaceRoot = await this.findWorkspaceRoot(absolutePath);
-
     // Get last modified time
     const lastModified = await this.getLastModified(absolutePath);
 
     return {
-      id: this.generateProjectId(absolutePath, gitInfo),
+      id: this.generateProjectId(absolutePath, workspaceRoot, gitInfo),
       name: projectName,
       path: absolutePath,
-      type: isGit ? 'git' : 'local',
+      type: isWorkspaceGit ? 'git' : 'local',
       gitInfo,
       workspaceRoot,
       lastModified,
@@ -266,17 +268,22 @@ export class ProjectIdentifier {
   /**
    * Generate a unique project ID
    */
-  private generateProjectId(projectPath: string, gitInfo?: ProjectInfo['gitInfo']): string {
+  private generateProjectId(
+    projectPath: string,
+    workspaceRoot: string,
+    gitInfo?: ProjectInfo['gitInfo']
+  ): string {
     const crypto = require('crypto');
 
     // For git repositories, include remote URL and branch in the ID
     if (gitInfo?.remoteUrl) {
-      const idString = `${gitInfo.remoteUrl}:${gitInfo.branch}:${projectPath}`;
+      const idString = `${gitInfo.remoteUrl}:${gitInfo.branch}:${workspaceRoot}`;
       return crypto.createHash('md5').update(idString).digest('hex').substring(0, 12);
     }
 
-    // For local projects, use path-based ID
-    return crypto.createHash('md5').update(projectPath).digest('hex').substring(0, 12);
+    // For local projects, use workspace root for consistent project identification
+    // This ensures that subdirectories of the same workspace are treated as the same project
+    return crypto.createHash('md5').update(workspaceRoot).digest('hex').substring(0, 12);
   }
 
   /**
@@ -671,20 +678,18 @@ export function parseIgnoreFile(content: string): string[] {
  */
 export function shouldIgnoreFile(filePath: string, patterns: string[]): boolean {
   let shouldIgnore = false;
+  const basename = path.basename(filePath);
 
   for (const pattern of patterns) {
     if (pattern.startsWith('!')) {
       // Negation pattern - check if it matches
       const negatedPattern = pattern.slice(1);
-      if (
-        minimatch(filePath, negatedPattern) ||
-        minimatch(path.basename(filePath), negatedPattern)
-      ) {
+      if (minimatch(filePath, negatedPattern) || minimatch(basename, negatedPattern)) {
         shouldIgnore = false;
       }
     } else {
       // Regular ignore pattern
-      if (minimatch(filePath, pattern) || minimatch(path.basename(filePath), pattern)) {
+      if (minimatch(filePath, pattern) || minimatch(basename, pattern)) {
         shouldIgnore = true;
       }
     }

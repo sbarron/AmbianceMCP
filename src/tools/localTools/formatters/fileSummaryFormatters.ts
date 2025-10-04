@@ -23,10 +23,9 @@ export function formatFileSummaryOutput(
   switch (format) {
     case 'xml':
       return formatFileSummaryAsXML(summary, quickAnalysis);
-    case 'structured':
-      return formatFileSummaryAsStructured(summary, quickAnalysis);
     case 'compact':
       return formatFileSummaryAsCompact(summary, quickAnalysis);
+    case 'structured':
     default:
       return formatFileSummaryAsStructured(summary, quickAnalysis);
   }
@@ -106,119 +105,49 @@ export function formatFileSummaryAsXML(summary: any, quickAnalysis: string): str
  * Format file summary as structured markdown for human readability
  */
 export function formatFileSummaryAsStructured(summary: any, quickAnalysis: string): string {
-  // Group symbols by type for better organization
-  const symbolsByType = summary.symbols.reduce((acc: any, symbol: any) => {
-    if (!acc[symbol.type]) acc[symbol.type] = [];
-    acc[symbol.type].push(symbol);
-    return acc;
-  }, {});
+  const fileName = path.basename(summary.file);
 
-  // Prioritize symbol types for display
-  const typeOrder = ['class', 'interface', 'function', 'export', 'import', 'variable', 'type'];
-  const orderedTypes = typeOrder.filter(type => symbolsByType[type]);
+  let output = `# 📄 File Analysis: ${fileName}\n\n`;
+  output += `**Language**: ${summary.language}\n`;
+  output += `**Symbol Count**: ${summary.symbolCount}\n`;
+  output += `**Complexity**: ${summary.complexity}\n\n`;
 
-  // Build file header section
-  let headerSection = '';
   if (summary.fileHeader && summary.fileHeader.content) {
-    const headerType =
-      summary.fileHeader.type === 'comment' ? '📝 File Documentation' : '🔍 File Preview';
-    headerSection = `
-## ${headerType} (${summary.fileHeader.lineCount} lines)
-\`\`\`
-${summary.fileHeader.content}
-\`\`\`
-`;
+    output += `## File Header\n\n${summary.fileHeader.content}\n\n`;
   }
 
-  return `# 📄 File Analysis: ${path.basename(summary.file)}
+  if (summary.allFunctions && summary.allFunctions.length > 0) {
+    output += `## Functions (${summary.allFunctions.length})\n\n`;
+    summary.allFunctions.slice(0, 10).forEach((func: any) => {
+      output += `- **${func.name}** (line ${func.line})${func.isAsync ? ' [async]' : ''}${func.isExported ? ' [exported]' : ''}\n`;
+      if (func.signature) {
+        output += `  \`${func.signature.substring(0, 80)}${func.signature.length > 80 ? '...' : ''}\`\n`;
+      }
+    });
+    output += '\n';
+  }
 
-## File Information
-- **Path:** ${summary.file}
-- **Language:** ${summary.language}
-- **Complexity:** ${summary.complexity}${summary.complexityData ? ` (CC: ${summary.complexityData.totalComplexity}, ${summary.complexityData.description})` : ''}
-- **Symbol Count:** ${summary.symbolCount}
-- **Exists:** ${summary.exists ? 'Yes' : 'No'}
+  if (summary.allClasses && summary.allClasses.length > 0) {
+    output += `## Classes (${summary.allClasses.length})\n\n`;
+    summary.allClasses.forEach((cls: any) => {
+      output += `- **${cls.name}** (line ${cls.line})${cls.isExported ? ' [exported]' : ''}\n`;
+      if (cls.methods && cls.methods.length > 0) {
+        output += `  Methods: ${cls.methods.join(', ')}\n`;
+      }
+    });
+    output += '\n';
+  }
 
-## Quick Analysis
-${quickAnalysis}${headerSection}
+  if (summary.complexityData) {
+    output += `## Complexity Analysis\n\n`;
+    output += `- **Total Complexity**: ${summary.complexityData.totalComplexity}\n`;
+    output += `- **Decision Points**: ${summary.complexityData.decisionPoints}\n`;
+    output += `- **Rating**: ${summary.complexityData.rating} - ${summary.complexityData.description}\n\n`;
+  }
 
-## 🏗️ Classes (${summary.allClasses ? summary.allClasses.length : 0})
-${
-  summary.allClasses && summary.allClasses.length > 0
-    ? summary.allClasses
-        .map(
-          (cls: any) => `
-### ${cls.name} ${cls.isExported ? '📤' : '🔒'}
-- **Line:** ${cls.line}
-- **Methods:** ${cls.methods.length > 0 ? cls.methods.join(', ') : 'None'}
-- **Exported:** ${cls.isExported ? 'Yes' : 'No'}
-`
-        )
-        .join('')
-    : '_No classes found._'
-}
+  output += `## Quick Analysis\n\n${quickAnalysis}`;
 
-## 🔧 Interface Definitions (${summary.allInterfaces ? summary.allInterfaces.length : 0})
-${
-  summary.allInterfaces && summary.allInterfaces.length > 0
-    ? summary.allInterfaces
-        .map(
-          (iface: any) => `
-### ${iface.name}
-- **Line:** ${iface.line}
-- **Purpose:** ${iface.purpose}
-`
-        )
-        .join('')
-    : '_No interfaces found._'
-}
-
-## 🔧 Function Definitions (${summary.allFunctions.length})
-${
-  summary.allFunctions.length > 0
-    ? formatFunctionDefinitions(summary.allFunctions)
-    : '_No functions found in this file._'
-}
-
-## 📤 Module Exports (${summary.exportedSymbols ? summary.exportedSymbols.length : 0})
-${
-  summary.exportedSymbols && summary.exportedSymbols.length > 0
-    ? `This module exports: \`${summary.exportedSymbols.join('`, `')}\``
-    : '_No exported symbols found._'
-}
-
-${
-  summary.complexityData && summary.complexityData.decisionPoints > 0
-    ? `
-## 📊 Complexity Analysis
-- **Cyclomatic Complexity:** ${summary.complexityData.totalComplexity}
-- **Decision Points:** ${summary.complexityData.decisionPoints}
-- **Rating:** ${summary.complexityData.rating} - ${summary.complexityData.description}
-`
-    : ''
-}
-
-## 📋 Key Symbols (${summary.symbols.length})
-${orderedTypes
-  .map(type => {
-    const symbols = symbolsByType[type];
-    return `
-### ${type.charAt(0).toUpperCase() + type.slice(1)} Symbols (${symbols.length})
-${symbols
-  .map(
-    (symbol: any) => `
-#### ${symbol.name}
-- **Line:** ${symbol.line}
-- **Purpose:** ${classifySymbolPurpose(symbol)}
-- **Signature:** \`${symbol.signature}\`${symbol.type === 'function' && symbol.signature.includes('async') ? ' (async)' : ''}
-`
-  )
-  .join('')}`;
-  })
-  .join('')}
-
----
-*End of AST-based analysis*`;
+  return output;
 }
 
 /**
@@ -270,125 +199,25 @@ export function classifySymbolPurpose(symbol: any): string {
     return 'Utility function';
   }
 
-  if (type === 'interface' || type === 'type') return 'Type definition';
-  if (type === 'export') return 'Module export';
-  if (type === 'import') return 'External dependency';
+  if (type === 'interface') {
+    return 'Type contract definition';
+  }
+
+  if (type === 'export') {
+    return 'Module export';
+  }
+
+  if (type === 'import') {
+    return 'Module import';
+  }
+
   if (type === 'variable') {
-    if (name.includes('config') || name.includes('options')) return 'Configuration variable';
-    return 'State variable';
+    if (name.includes('config') || name.includes('settings')) return 'Configuration variable';
+    if (name.includes('state') || name.includes('data')) return 'State variable';
+    return 'Data variable';
   }
 
-  return symbol.purpose || 'Not documented';
-}
-
-/**
- * Format function definitions for display
- */
-export function formatFunctionDefinitions(functions: any[]): string {
-  if (functions.length === 0) return '_No functions found._';
-
-  // Group functions by type and visibility
-  const classMethods = functions.filter(f => f.isMethod);
-  const standaloneFunctions = functions.filter(f => !f.isMethod);
-  const exportedFunctions = standaloneFunctions.filter(f => f.isExported);
-  const internalFunctions = standaloneFunctions.filter(f => !f.isExported);
-
-  let output = '';
-
-  // Class methods section
-  if (classMethods.length > 0) {
-    const methodsByClass = classMethods.reduce((acc: any, method) => {
-      const className = method.className || 'Unknown';
-      if (!acc[className]) acc[className] = [];
-      acc[className].push(method);
-      return acc;
-    }, {});
-
-    Object.entries(methodsByClass).forEach(([className, methods]: [string, any]) => {
-      output += `\n### 🏗️ ${className} Class Methods (${methods.length})\n`;
-      methods.forEach((func: any) => {
-        const asyncLabel = func.isAsync ? ' `async`' : '';
-        const paramCount = func.parameters.length;
-        const paramPreview =
-          paramCount > 0
-            ? `${paramCount} param${paramCount > 1 ? 's' : ''}: \`${func.parameters
-                .slice(0, 2)
-                .map((p: any) => p.name + ': ' + p.type)
-                .join(', ')}${paramCount > 2 ? '...' : ''}\``
-            : 'no parameters';
-
-        const returnInfo = buildReturnInfo(func);
-
-        output += `- **${func.name}**${asyncLabel} (line ${func.line}) - ${paramPreview}${returnInfo}\n`;
-        output += `  \`\`\`typescript\n  ${func.signature}\n  \`\`\`\n\n`;
-      });
-    });
-  }
-
-  // Exported standalone functions
-  if (exportedFunctions.length > 0) {
-    output += `\n### 📤 Exported Functions (${exportedFunctions.length})\n`;
-    exportedFunctions.forEach(func => {
-      const asyncLabel = func.isAsync ? ' `async`' : '';
-      const paramCount = func.parameters.length;
-      const paramPreview =
-        paramCount > 0
-          ? `${paramCount} param${paramCount > 1 ? 's' : ''}: \`${func.parameters
-              .slice(0, 2)
-              .map((p: any) => p.name + ': ' + p.type)
-              .join(', ')}${paramCount > 2 ? '...' : ''}\``
-          : 'no parameters';
-
-      const returnInfo = buildReturnInfo(func);
-
-      output += `- **${func.name}**${asyncLabel} (line ${func.line}) - ${paramPreview}${returnInfo}\n`;
-      output += `  \`\`\`typescript\n  ${func.signature}\n  \`\`\`\n\n`;
-    });
-  }
-
-  // Internal standalone functions
-  if (internalFunctions.length > 0) {
-    output += `\n### 🔒 Internal Functions (${internalFunctions.length})\n`;
-    internalFunctions.forEach(func => {
-      const asyncLabel = func.isAsync ? ' `async`' : '';
-      const paramCount = func.parameters.length;
-      const paramPreview =
-        paramCount > 0
-          ? `${paramCount} param${paramCount > 1 ? 's' : ''}: \`${func.parameters
-              .slice(0, 2)
-              .map((p: any) => p.name + ': ' + p.type)
-              .join(', ')}${paramCount > 2 ? '...' : ''}\``
-          : 'no parameters';
-
-      const returnInfo = buildReturnInfo(func);
-
-      output += `- **${func.name}**${asyncLabel} (line ${func.line}) - ${paramPreview}${returnInfo}\n`;
-      output += `  \`\`\`typescript\n  ${func.signature}\n  \`\`\`\n\n`;
-    });
-  }
-
-  return output;
-}
-
-/**
- * Build return information string for function display
- */
-export function buildReturnInfo(func: any): string {
-  const returnParts: string[] = [];
-
-  // Add return type if available
-  if (func.returnType && func.returnType !== 'unknown') {
-    returnParts.push(`→ \`${func.returnType}\``);
-  }
-
-  // Add returned symbols if available
-  if (func.returnedSymbols && func.returnedSymbols.length > 0) {
-    const symbolsPreview = func.returnedSymbols.slice(0, 3).join(', ');
-    const more = func.returnedSymbols.length > 3 ? '...' : '';
-    returnParts.push(`returns: \`${symbolsPreview}${more}\``);
-  }
-
-  return returnParts.length > 0 ? ` | ${returnParts.join(' | ')}` : '';
+  return 'General symbol';
 }
 
 /**
@@ -427,4 +256,25 @@ export function generateQuickFileAnalysis(summary: any): string {
   else pattern = 'Utility';
 
   return `${fileName} (${language}): ${symbolCount} symbols, ${complexity} complexity, ${pattern} pattern. Key: ${topSymbols || 'Analysis in progress'}`;
+}
+
+/**
+ * Format function definitions for display
+ */
+export function formatFunctionDefinitions(functions: any[]): string {
+  return functions
+    .map(
+      (func: any) => `
+### ${func.name} ${func.isExported ? '📤' : '🔒'} ${func.isAsync ? '⚡' : ''}
+- **Line:** ${func.line}
+- **Signature:** \`${func.signature}\`
+- **Parameters:** ${func.parameters.length > 0 ? func.parameters.join(', ') : 'None'}
+- **Return Type:** ${func.returnType || 'void'}
+- **Async:** ${func.isAsync ? 'Yes' : 'No'}
+- **Exported:** ${func.isExported ? 'Yes' : 'No'}
+- **Is Method:** ${func.isMethod ? 'Yes' : 'No'}
+${func.returnedSymbols && func.returnedSymbols.length > 0 ? `- **Returns:** ${func.returnedSymbols.join(', ')}` : ''}
+- **Purpose:** ${func.purpose}`
+    )
+    .join('');
 }

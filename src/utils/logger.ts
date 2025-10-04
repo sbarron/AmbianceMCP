@@ -31,7 +31,9 @@ export class Logger {
   }
 
   info(message: string, context?: LogContext): void {
-    this.log('INFO', message, context);
+    if (this.shouldLog('info')) {
+      this.log('INFO', message, context);
+    }
   }
 
   warn(message: string, context?: LogContext): void {
@@ -46,6 +48,17 @@ export class Logger {
     if (process.env.DEBUG || process.env.NODE_ENV === 'development') {
       this.log('DEBUG', message, context);
     }
+  }
+
+  private shouldLog(level: string): boolean {
+    const logLevel = process.env.LOG_LEVEL?.toLowerCase() || 'info';
+
+    const levels = ['debug', 'info', 'warn', 'error'];
+    const currentLevelIndex = levels.indexOf(logLevel);
+    const messageLevelIndex = levels.indexOf(level.toLowerCase());
+
+    // Log if message level is at or above current log level
+    return messageLevelIndex >= currentLevelIndex;
   }
 
   private log(level: string, message: string, context?: LogContext): void {

@@ -4,7 +4,12 @@
  */
 
 import { describe, test, expect } from '@jest/globals';
-import { ValidationError, ValidationHelper, DiscoverFilesInputSchema, ReadFileInputSchema } from '../validation';
+import {
+  ValidationError,
+  ValidationHelper,
+  DiscoverFilesInputSchema,
+  ReadFileInputSchema,
+} from '../validation';
 import { z } from 'zod';
 
 describe('Core Validation Error Handling', () => {
@@ -124,24 +129,24 @@ describe('Core Validation Error Handling', () => {
         user: z.object({
           name: z.string().min(1),
           email: z.string().email(),
-          age: z.number().min(0).max(150)
+          age: z.number().min(0).max(150),
         }),
         settings: z.object({
           theme: z.enum(['light', 'dark']),
-          notifications: z.boolean()
-        })
+          notifications: z.boolean(),
+        }),
       });
 
       const invalidData = {
         user: {
           name: '',
           email: 'invalid-email',
-          age: -5
+          age: -5,
         },
         settings: {
           theme: 'invalid-theme',
-          notifications: 'not-boolean'
-        }
+          notifications: 'not-boolean',
+        },
       };
 
       expect(() => {
@@ -152,7 +157,7 @@ describe('Core Validation Error Handling', () => {
     test('should handle optional fields correctly', () => {
       const optionalSchema = z.object({
         required: z.string(),
-        optional: z.string().optional()
+        optional: z.string().optional(),
       });
 
       // Should pass with only required field
@@ -195,10 +200,11 @@ describe('Core Validation Error Handling', () => {
 
   describe('Custom Validation Rules', () => {
     test('should handle custom refinement failures', () => {
-      const customSchema = z.string().refine(
-        (val) => val.includes('required-text'),
-        { message: 'String must contain required-text' }
-      );
+      const customSchema = z
+        .string()
+        .refine(val => val.includes('required-text'), {
+          message: 'String must contain required-text',
+        });
 
       expect(() => {
         ValidationHelper.validateInput(customSchema, 'missing text', 'custom');
@@ -206,7 +212,7 @@ describe('Core Validation Error Handling', () => {
     });
 
     test('should handle transform failures', () => {
-      const transformSchema = z.string().transform((val) => {
+      const transformSchema = z.string().transform(val => {
         const num = parseInt(val, 10);
         if (isNaN(num)) {
           throw new Error('Cannot transform to number');
@@ -223,7 +229,7 @@ describe('Core Validation Error Handling', () => {
   describe('Edge Cases', () => {
     test('should handle very large objects', () => {
       const largeObjectSchema = z.object({
-        data: z.array(z.string()).max(10000)
+        data: z.array(z.string()).max(10000),
       });
 
       const largeArray = new Array(10001).fill('item');
@@ -239,7 +245,7 @@ describe('Core Validation Error Handling', () => {
 
       const simpleSchema = z.object({
         name: z.string(),
-        self: z.any().optional()
+        self: z.any().optional(),
       });
 
       // Should not crash on circular references

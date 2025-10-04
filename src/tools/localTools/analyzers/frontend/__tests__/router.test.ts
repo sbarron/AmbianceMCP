@@ -15,50 +15,50 @@ const mockFiles: FileInfo[] = [
     relPath: 'app/page.tsx',
     size: 100,
     ext: '.tsx',
-    language: 'typescript'
+    language: 'typescript',
   },
   {
     absPath: '/project/app/dashboard/page.tsx',
     relPath: 'app/dashboard/page.tsx',
     size: 150,
     ext: '.tsx',
-    language: 'typescript'
+    language: 'typescript',
   },
   {
     absPath: '/project/app/users/[id]/page.tsx',
     relPath: 'app/users/[id]/page.tsx',
     size: 120,
     ext: '.tsx',
-    language: 'typescript'
+    language: 'typescript',
   },
   {
     absPath: '/project/app/blog/[...slug]/page.tsx',
     relPath: 'app/blog/[...slug]/page.tsx',
     size: 130,
     ext: '.tsx',
-    language: 'typescript'
+    language: 'typescript',
   },
   {
     absPath: '/project/app/files/[[...path]]/page.tsx',
     relPath: 'app/files/[[...path]]/page.tsx',
     size: 140,
     ext: '.tsx',
-    language: 'typescript'
+    language: 'typescript',
   },
   {
     absPath: '/project/app/(marketing)/pricing/page.tsx',
     relPath: 'app/(marketing)/pricing/page.tsx',
     size: 110,
     ext: '.tsx',
-    language: 'typescript'
+    language: 'typescript',
   },
   {
     absPath: '/project/app/api/users/route.ts',
     relPath: 'app/api/users/route.ts',
     size: 160,
     ext: '.ts',
-    language: 'typescript'
-  }
+    language: 'typescript',
+  },
 ];
 
 describe('Router Analyzer', () => {

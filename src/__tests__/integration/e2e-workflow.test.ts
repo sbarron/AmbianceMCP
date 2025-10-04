@@ -39,7 +39,7 @@ describe('Ambiance MCP E2E Workflows', () => {
     mockServer = new MockApiServer({
       port: 4001,
       validKeys: ['e2e-test-key'],
-      simulateErrors: false
+      simulateErrors: false,
     });
 
     await mockServer.start();
@@ -77,7 +77,9 @@ describe('Ambiance MCP E2E Workflows', () => {
       // Verify server started successfully
       expect(logger.info).toHaveBeenCalledWith('🔧 Startup flags', expect.any(Object));
       expect(logger.info).toHaveBeenCalledWith('🔧 Tool handlers registered successfully');
-      expect(logger.info).toHaveBeenCalledWith('🚀 Initializing Ambiance MCP Server with SDK v1.17.3');
+      expect(logger.info).toHaveBeenCalledWith(
+        '🚀 Initializing Ambiance MCP Server v0.1.9-beta with SDK v1.17.3'
+      );
     });
   });
 
@@ -93,7 +95,9 @@ describe('Ambiance MCP E2E Workflows', () => {
 
       // Verify server started with cloud tools
       expect(logger.info).toHaveBeenCalledWith('✅ Ambiance API key validation successful');
-      expect(logger.info).toHaveBeenCalledWith('✅ Ambiance API key validated - adding cloud storage and embedding tools');
+      expect(logger.info).toHaveBeenCalledWith(
+        '✅ Ambiance API key validated - adding cloud storage and embedding tools'
+      );
       expect(logger.info).toHaveBeenCalledWith('✅ MCP Server ready for requests');
     });
   });
@@ -109,7 +113,9 @@ describe('Ambiance MCP E2E Workflows', () => {
       await server.start();
 
       // Verify server handled invalid key gracefully and continued
-      expect(logger.warn).toHaveBeenCalledWith('⚠️ Ambiance API key detected but validation failed - cloud tools disabled');
+      expect(logger.warn).toHaveBeenCalledWith(
+        '⚠️ Ambiance API key detected but validation failed - cloud tools disabled'
+      );
       expect(logger.info).toHaveBeenCalledWith('✅ MCP Server ready for requests');
     });
   });
@@ -120,7 +126,7 @@ describe('Ambiance MCP E2E Workflows', () => {
       const errorServer = new MockApiServer({
         port: 4002,
         validKeys: ['e2e-test-key'],
-        simulateErrors: true
+        simulateErrors: true,
       });
 
       await errorServer.start();
@@ -132,7 +138,9 @@ describe('Ambiance MCP E2E Workflows', () => {
       await server.start();
 
       // Verify server handled errors and still started
-      expect(logger.warn).toHaveBeenCalledWith('⚠️ Ambiance API key detected but validation failed - cloud tools disabled');
+      expect(logger.warn).toHaveBeenCalledWith(
+        '⚠️ Ambiance API key detected but validation failed - cloud tools disabled'
+      );
       expect(logger.info).toHaveBeenCalledWith('✅ MCP Server ready for requests');
 
       await errorServer.stop();

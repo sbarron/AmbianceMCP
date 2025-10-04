@@ -18,6 +18,9 @@ import { formatFileSummaryOutput } from './formatters/fileSummaryFormatters';
 import { generateQuickFileAnalysis } from './formatters/fileSummaryFormatters';
 import { handleNonCodeFile, extractFileHeader } from './analyzers/fileAnalyzers';
 import { calculateCyclomaticComplexity } from './analyzers/complexityAnalysis';
+import { handleAstGrep, executeAstGrep } from './astGrep';
+import { getPatterns, preparePattern, SymbolPattern } from './symbolPatterns';
+import { ASTParser } from '../../core/compactor/astParser';
 
 /**
  * Lightweight type resolution that maps AST node kinds to readable identifiers
@@ -150,7 +153,16 @@ export async function handleFileSummary(args: any): Promise<any> {
   });
 
   try {
-    const language = getLanguageFromPath(filePath);
+    // Check if file exists before proceeding
+    const fs = await import('fs/promises');
+    try {
+      await fs.access(resolvedFilePath);
+    } catch (error) {
+      throw new Error('File not found');
+    }
+
+    const languageInfo = getLanguageFromPath(filePath);
+    const language = languageInfo.lang;
 
     // Check if this is a non-code file that doesn't need AST analysis
     if (
@@ -169,8 +181,19 @@ export async function handleFileSummary(args: any): Promise<any> {
       );
     }
 
-    // Use semantic compactor for single file analysis
-    const compactor = new SemanticCompactor(projectPath);
+    // Use semantic compactor for single file analysis (optional)
+    let nodes = [];
+    try {
+      const compactor = new SemanticCompactor(projectPath);
+      nodes = await compactor.getSummary(resolvedFilePath);
+      compactor.dispose();
+    } catch (error) {
+      logger.warn('Skipping semantic compactor summary for single file', {
+        projectPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      nodes = [];
+    }
 
     // 🔑 Get comprehensive analysis directly from AST (bypass semantic compactor filtering)
     logger.info('🔍 About to call getComprehensiveASTAnalysis', { resolvedFilePath });
@@ -198,8 +221,6 @@ export async function handleFileSummary(args: any): Promise<any> {
     });
 
     // Get semantic compactor results for comparison (but don't rely on them for symbol count)
-    const nodes = await compactor.getSummary(resolvedFilePath);
-
     // Debug: Log the AST analysis results
     logger.debug('🔍 AST Analysis Results', {
       filePath: resolvedFilePath,
@@ -209,8 +230,12 @@ export async function handleFileSummary(args: any): Promise<any> {
       interfaces: astAnalysis.allInterfaces.length,
       exportedSymbols: astAnalysis.exportedSymbols.length,
       topSymbols: astAnalysis.topSymbols.length,
-      sampleFunctions: astAnalysis.allFunctions.slice(0, 3).map(f => ({ name: f.name, type: f.type, line: f.line })),
-      sampleClasses: astAnalysis.allClasses.slice(0, 3).map(c => ({ name: c.name, type: c.type, line: c.line })),
+      sampleFunctions: astAnalysis.allFunctions
+        .slice(0, 3)
+        .map(f => ({ name: f.name, type: f.type, line: f.line })),
+      sampleClasses: astAnalysis.allClasses
+        .slice(0, 3)
+        .map(c => ({ name: c.name, type: c.type, line: c.line })),
     });
 
     // Force use the actual AST analysis results instead of semantic compactor
@@ -243,7 +268,7 @@ export async function handleFileSummary(args: any): Promise<any> {
     }
 
     // Clean up resources
-    compactor.dispose();
+    // compactor.dispose(); // Moved inside try-catch
 
     const summary = {
       file: filePath,
@@ -259,13 +284,28 @@ export async function handleFileSummary(args: any): Promise<any> {
         : [],
       complexity: complexityData.rating,
       complexityData: complexityData, // 🔑 Add detailed complexity information
-      language: getLanguageFromPath(filePath),
+      language,
     };
 
     const quickAnalysis = generateQuickFileAnalysis(summary);
 
     // Format the output based on preference
-    const formattedSummary = formatFileSummaryOutput(summary, quickAnalysis, format);
+    let formattedSummary: string;
+    try {
+      formattedSummary = formatFileSummaryOutput(summary, quickAnalysis, format);
+      if (typeof formattedSummary !== 'string') {
+        logger.warn('Formatter returned non-string value', {
+          type: typeof formattedSummary,
+          value: formattedSummary,
+        });
+        formattedSummary = `Error: Formatter returned ${typeof formattedSummary} instead of string`;
+      }
+    } catch (error) {
+      logger.error('Failed to format file summary', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      formattedSummary = `Error formatting summary: ${error instanceof Error ? error.message : String(error)}`;
+    }
 
     logger.info('✅ File analysis completed', {
       symbolCount: summary.symbolCount,
@@ -299,47 +339,32 @@ export async function handleFileSummary(args: any): Promise<any> {
 }
 
 /**
- * Get language from file path extension
+ * Get language from file path extension with ast-grep code
  */
-export function getLanguageFromPath(filePath: string): string {
+export function getLanguageFromPath(filePath: string): { lang: string; grep?: string } {
   const ext = path.extname(filePath).toLowerCase();
-  const languageMap: Record<string, string> = {
-    '.ts': 'typescript',
-    '.tsx': 'typescript',
-    '.js': 'javascript',
-    '.jsx': 'javascript',
-    '.py': 'python',
-    '.go': 'go',
-    '.rs': 'rust',
-    '.cpp': 'cpp',
-    '.c': 'c',
-    '.c++': 'cpp',
-    '.c#': 'csharp',
-    '.cs': 'csharp',
-    '.java': 'java',
-    '.kt': 'kotlin',
-    '.kts': 'kotlin',
-    '.swift': 'swift',
-    '.dart': 'dart',
-    '.h': 'c',
-    '.hpp': 'cpp',
-    '.php': 'php',
-    '.html': 'html',
-    '.css': 'css',
-    '.scss': 'scss',
-    '.sass': 'sass',
-    '.less': 'less',
-    '.json': 'json',
-    '.md': 'markdown',
-    '.txt': 'text',
-    '.xml': 'xml',
-    '.yaml': 'yaml',
-    '.yml': 'yaml',
-    '.toml': 'toml',
-    '.ini': 'ini',
-    '.rb': 'ruby',
+  const languageMap: Record<string, { lang: string; grep?: string }> = {
+    '.ts': { lang: 'typescript', grep: 'ts' },
+    '.tsx': { lang: 'typescript', grep: 'tsx' },
+    '.js': { lang: 'javascript', grep: 'js' },
+    '.jsx': { lang: 'javascript', grep: 'jsx' },
+    '.py': { lang: 'python', grep: 'py' },
+    '.go': { lang: 'go', grep: 'go' },
+    '.rs': { lang: 'rust', grep: 'rs' },
+    '.cpp': { lang: 'cpp', grep: 'cpp' },
+    '.c': { lang: 'c', grep: 'c' },
+    '.java': { lang: 'java', grep: 'java' },
+    '.kt': { lang: 'kotlin', grep: 'kt' },
+    '.swift': { lang: 'swift', grep: 'swift' },
+    '.php': { lang: 'php', grep: 'php' },
+    '.rb': { lang: 'ruby', grep: 'rb' },
+    // ... existing others without grep ...
+    '.json': { lang: 'json' },
+    '.md': { lang: 'markdown' },
+    // ...
   };
-  return languageMap[ext] || 'unknown';
+  const result = languageMap[ext] || { lang: 'unknown' };
+  return result;
 }
 
 /**
@@ -407,6 +432,7 @@ export async function extractAllFunctions(filePath: string): Promise<any[]> {
 
 /**
  * Get comprehensive AST analysis without semantic compactor filtering
+ * Now with ast-grep fallback for multi-lang symbols
  */
 export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
   totalSymbols: number;
@@ -418,25 +444,37 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
 }> {
   try {
     logger.info('🔍 Starting AST analysis', { filePath });
-    const { ASTParser } = await import('../../core/compactor/astParser');
-    const language = getLanguageFromPath(filePath) as any;
-    logger.info('📝 Detected language', { language });
-    const parser = new ASTParser();
+    const languageInfo = getLanguageFromPath(filePath);
+    const language = languageInfo.lang as any;
+    const grepLang = languageInfo.grep;
+    logger.info('📝 Detected language', { language, grepLang });
 
+    const parser = new ASTParser();
     logger.info('⚙️ Created AST parser, about to parse file');
-    const parsedFile = await parser.parseFile(filePath, language);
+    let parsedFile = await parser.parseFile(filePath, language);
+    // Handle undefined/null from parser for unsupported langs (e.g., Python/Go no grammar)
+    if (!parsedFile) {
+      logger.warn('ASTParser returned undefined, forcing fallback', { filePath, language });
+      parsedFile = {
+        symbols: [],
+        imports: [],
+        exports: [],
+        errors: [],
+        absPath: filePath,
+        language,
+      };
+    }
     logger.info('✅ Parsed file successfully', {
       hasSymbols: !!parsedFile?.symbols,
       symbolCount: parsedFile?.symbols?.length || 0,
     });
 
-    // Extract all functions (including class methods)
-    const allFunctions: any[] = [];
-    const allClasses: any[] = [];
-    const allInterfaces: any[] = [];
-    const exportedSymbols: string[] = [];
+    let allFunctions: any[] = [];
+    let allClasses: any[] = [];
+    let allInterfaces: any[] = [];
+    let exportedSymbols: string[] = [];
 
-    // Process symbols
+    // Existing JS/TS/Python processing
     for (const symbol of parsedFile.symbols) {
       if (symbol.type === 'function') {
         allFunctions.push({
@@ -507,6 +545,26 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
       });
     }
 
+    // Fallback to ast-grep if few/no symbols or non-JS/TS (force for samples/unsupported)
+    let initialSymbolCount = parsedFile.symbols.length || 0;
+    const isNonJsTs = grepLang && !['ts', 'js', 'jsx', 'tsx'].includes(grepLang);
+    if ((initialSymbolCount < 2 || isNonJsTs) && grepLang) {
+      logger.info('🔄 Falling back to ast-grep for symbol extraction', {
+        filePath,
+        grepLang,
+        initialSymbolCount,
+      });
+      const astGrepSymbols = extractSymbolsWithAstGrep(filePath, grepLang);
+      allFunctions = [...allFunctions, ...astGrepSymbols.functions];
+      allClasses = [...allClasses, ...astGrepSymbols.classes];
+      exportedSymbols = [...exportedSymbols, ...(astGrepSymbols.exports || [])];
+      logger.info('✅ Ast-grep extraction complete', {
+        functions: astGrepSymbols.functions.length,
+        classes: astGrepSymbols.classes.length,
+      });
+      initialSymbolCount += astGrepSymbols.functions.length + astGrepSymbols.classes.length;
+    }
+
     // Create top symbols list (prioritize important symbols)
     const topSymbols: any[] = [];
 
@@ -557,7 +615,7 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
     parser.dispose();
 
     return {
-      totalSymbols: parsedFile.symbols.length,
+      totalSymbols: initialSymbolCount, // Use updated count after fallback
       allFunctions,
       allClasses,
       allInterfaces,
@@ -578,6 +636,284 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
       topSymbols: [],
     };
   }
+}
+
+/**
+ * Extract symbols using ast-grep patterns (multi-lang fallback)
+ */
+function extractSymbolsWithAstGrep(
+  filePath: string,
+  grepLang: string
+): {
+  functions: any[];
+  classes: any[];
+  exports: string[];
+} {
+  const functions: any[] = [];
+  const classes: any[] = [];
+  const exports: string[] = [];
+
+  // Get patterns for this lang
+  const funcPatterns = getPatterns(grepLang, 'functions');
+  const classPatterns = getPatterns(grepLang, 'classes');
+  const methodPatterns = getPatterns(grepLang, 'methods') || [];
+
+  // Run for functions
+  for (const pat of funcPatterns) {
+    try {
+      // Use direct CLI call to ast-grep for more reliable results
+      const { execSync } = require('child_process');
+      const command = `npx ast-grep --pattern "${pat.pattern.replace(/"/g, '\\"')}" --lang ${pat.lang} --json=stream "${filePath}"`;
+
+      let matches: any[] = [];
+      try {
+        const stdout = execSync(command, {
+          cwd: process.cwd(),
+          encoding: 'utf8',
+          maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        });
+
+        // Parse the JSON stream output
+        matches = stdout
+          .trim()
+          .split('\n')
+          .filter((line: string) => line.trim())
+          .map((line: string) => {
+            try {
+              return JSON.parse(line);
+            } catch (e) {
+              logger.warn('Failed to parse ast-grep JSON line for functions', { line, error: e });
+              return null;
+            }
+          })
+          .filter((match: any) => match !== null);
+      } catch (error) {
+        // Command failed or no matches found
+        logger.warn('ast-grep command failed for functions', {
+          command,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        matches = [];
+      }
+
+      const result = { matches };
+
+      if (result && (result as any).matches) {
+        (result as any).matches.forEach((match: any) => {
+          // Parse function name from the matched text
+          let name = 'unknown';
+          const fullText = match.lines || match.text;
+          if (grepLang === 'py' && fullText.includes('def ')) {
+            // Extract function name from "def function_name("
+            const funcMatch = fullText.match(/def\s+(\w+)\s*\(/);
+            if (funcMatch) name = funcMatch[1];
+          } else if (grepLang === 'go' && fullText.includes('func ')) {
+            // Extract function name from "func functionName("
+            const funcMatch = fullText.match(/func\s+(\w+)\s*\(/);
+            if (funcMatch) name = funcMatch[1];
+          } else if (grepLang === 'rust' && fullText.includes('fn ')) {
+            // Extract function name from "fn function_name("
+            const funcMatch = fullText.match(/fn\s+(\w+)\s*\(/);
+            if (funcMatch) name = funcMatch[1];
+          }
+
+          functions.push({
+            name,
+            type: 'function',
+            signature: fullText.trim(),
+            line: match.range.start.line + 1, // Convert to 1-based line numbers
+            isExported: false, // Detect via separate pattern if needed
+            parameters: [],
+            returnType: '',
+            body: '',
+            purpose: 'Function',
+          });
+          exports.push(name); // Assume exported
+        });
+      }
+    } catch (error) {
+      logger.warn('Failed to extract functions with ast-grep', {
+        pattern: pat.pattern,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // Similar for classes and methods (adapt to allClasses/allFunctions)
+  for (const pat of classPatterns) {
+    try {
+      // Use direct CLI call to ast-grep for more reliable results
+      const { execSync } = require('child_process');
+      const command = `npx ast-grep --pattern "${pat.pattern.replace(/"/g, '\\"')}" --lang ${pat.lang} --json=stream "${filePath}"`;
+
+      let matches: any[] = [];
+      try {
+        const stdout = execSync(command, {
+          cwd: process.cwd(),
+          encoding: 'utf8',
+          maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        });
+
+        // Parse the JSON stream output
+        matches = stdout
+          .trim()
+          .split('\n')
+          .filter((line: string) => line.trim())
+          .map((line: string) => {
+            try {
+              return JSON.parse(line);
+            } catch (e) {
+              return null;
+            }
+          })
+          .filter((match: any) => match !== null);
+      } catch (error) {
+        // Command failed or no matches found
+        matches = [];
+      }
+
+      const result = { matches };
+
+      if (result && (result as any).matches) {
+        (result as any).matches.forEach((match: any) => {
+          // Parse class name from the matched text
+          let name = 'unknown';
+          const fullText = match.lines || match.text;
+          if (grepLang === 'py' && fullText.includes('class ')) {
+            // Extract class name from "class ClassName("
+            const classMatch = fullText.match(/class\s+(\w+)/);
+            if (classMatch) name = classMatch[1];
+          } else if (grepLang === 'java' && fullText.includes('class ')) {
+            // Extract class name from "public class ClassName"
+            const classMatch = fullText.match(/class\s+(\w+)/);
+            if (classMatch) name = classMatch[1];
+          }
+
+          classes.push({
+            name,
+            type: 'class',
+            signature: fullText.trim(),
+            line: match.range.start.line + 1, // Convert to 1-based line numbers
+            isExported: false, // Detect via separate pattern if needed
+            methods: [], // Methods are handled separately
+            purpose: 'Class',
+          });
+          exports.push(name); // Assume exported
+        });
+      }
+    } catch (error) {
+      logger.warn('Failed to extract classes with ast-grep', {
+        pattern: pat.pattern,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  for (const pat of methodPatterns) {
+    try {
+      // Use direct CLI call to ast-grep for more reliable results
+      const { execSync } = require('child_process');
+      const command = `npx ast-grep --pattern "${pat.pattern.replace(/"/g, '\\"')}" --lang ${pat.lang} --json=stream "${filePath}"`;
+
+      let matches: any[] = [];
+      try {
+        const stdout = execSync(command, {
+          cwd: process.cwd(),
+          encoding: 'utf8',
+          maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        });
+
+        // Parse the JSON stream output
+        matches = stdout
+          .trim()
+          .split('\n')
+          .filter((line: string) => line.trim())
+          .map((line: string) => {
+            try {
+              return JSON.parse(line);
+            } catch (e) {
+              return null;
+            }
+          })
+          .filter((match: any) => match !== null);
+      } catch (error) {
+        // Command failed or no matches found
+        matches = [];
+      }
+
+      const result = { matches };
+
+      if (result && (result as any).matches) {
+        (result as any).matches.forEach((match: any) => {
+          // Parse method name from the matched text
+          let name = 'unknown';
+          let isMethod = false;
+          let isClass = false;
+
+          const matchText = match.lines || match.text;
+          if (grepLang === 'java' && matchText.includes('public ')) {
+            // Check if it's a class declaration first
+            const classMatch = matchText.match(/public\s+class\s+(\w+)/);
+            if (classMatch) {
+              name = classMatch[1];
+              isClass = true;
+              // Skip if already in classes array (avoid duplicates)
+              if (!classes.find(c => c.name === name && c.line === match.range.start.line + 1)) {
+                classes.push({
+                  name,
+                  type: 'class',
+                  signature: matchText.trim(),
+                  line: match.range.start.line + 1,
+                  isExported: true,
+                  methods: [],
+                  purpose: 'Class',
+                });
+                exports.push(name);
+              }
+              return; // Skip adding to functions
+            }
+
+            // Extract method name from "public ReturnType methodName("
+            const methodMatch = matchText.match(/public\s+(?:static\s+)?(\w+)\s+(\w+)\s*\(/);
+            if (methodMatch) {
+              name = methodMatch[2]; // The second capture group is the method name
+              isMethod = true;
+            } else {
+              // Try to match constructors "public ClassName("
+              const constructorMatch = matchText.match(/public\s+(\w+)\s*\(/);
+              if (constructorMatch) {
+                name = constructorMatch[1];
+                isMethod = true;
+              }
+            }
+          }
+
+          if (isMethod && !isClass) {
+            functions.push({
+              name,
+              type: 'method',
+              signature: matchText.trim(),
+              line: match.range.start.line + 1,
+              isExported: false,
+              isMethod: true,
+              parameters: [],
+              returnType: '',
+              body: '',
+              purpose: 'Method',
+            });
+            exports.push(name);
+          }
+        });
+      }
+    } catch (error) {
+      logger.warn('Failed to extract methods with ast-grep', {
+        pattern: pat.pattern,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return { functions, classes, exports };
 }
 
 /**

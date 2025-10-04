@@ -4,9 +4,13 @@
  * @context: Testing embedding generation with provider fallback and error handling
  */
 
-import { LocalEmbeddingGenerator, GenerationOptions, GenerationProgress } from '../embeddingGenerator';
+import {
+  LocalEmbeddingGenerator,
+  GenerationOptions,
+  GenerationProgress,
+} from '../embeddingGenerator';
 import { LocalEmbeddingStorage } from '../embeddingStorage';
-import { LocalEmbeddingProvider } from '../localEmbeddingProvider';
+import { LocalEmbeddingProvider, getDefaultLocalProvider } from '../localEmbeddingProvider';
 import { apiClient } from '../../client/apiClient';
 import { openaiService } from '../../core/openaiService';
 import { logger } from '../../utils/logger';
@@ -21,29 +25,48 @@ jest.mock('../embeddingStorage', () => ({
     getEmbeddingMetadata: jest.fn().mockReturnValue({
       embeddingFormat: 'float32',
       embeddingDimensions: 1024,
-      embeddingProvider: 'voyageai'
+      embeddingProvider: 'voyageai',
     }),
     getProjectEmbeddings: jest.fn().mockResolvedValue([]),
     clearProjectEmbeddings: jest.fn().mockResolvedValue(undefined),
     close: jest.fn().mockResolvedValue(undefined),
   })),
 }));
+
+// Mock the static generateContentHash method
+const mockStorageModule = jest.requireMock('../embeddingStorage');
+mockStorageModule.LocalEmbeddingStorage.generateContentHash = jest
+  .fn()
+  .mockReturnValue('mock-hash');
 jest.mock('../localEmbeddingProvider');
 jest.mock('../../client/apiClient');
 jest.mock('../../utils/logger');
 jest.mock('fs');
 jest.mock('../treeSitterProcessor');
+jest.mock('globby');
+
+// Mock getDefaultLocalProvider function
+jest.mock('../localEmbeddingProvider', () => ({
+  LocalEmbeddingProvider: jest.fn(),
+  getDefaultLocalProvider: jest.fn(),
+}));
 
 // Setup LocalEmbeddingProvider mock
 const mockLocalProvider = {
-  generateEmbeddings: jest.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
+  generateEmbeddings: jest.fn().mockResolvedValue([
+    {
+      embedding: [0.1, 0.2, 0.3],
+      model: 'all-MiniLM-L6-v2',
+      dimensions: 384,
+    },
+  ]),
   generateQueryEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3]),
   getModelInfo: jest.fn().mockReturnValue({
     name: 'all-MiniLM-L6-v2',
     dimensions: 384,
-    provider: 'transformers.js'
+    provider: 'transformers.js',
   }),
-  dispose: jest.fn().mockResolvedValue(undefined)
+  dispose: jest.fn().mockResolvedValue(undefined),
 };
 (LocalEmbeddingProvider as jest.Mock).mockImplementation(() => mockLocalProvider);
 
@@ -51,8 +74,10 @@ const mockLocalProvider = {
 jest.mock('../../core/openaiService', () => ({
   openaiService: {
     isReady: jest.fn(),
+    getClient: jest.fn(),
   },
 }));
+const mockOpenAIService = require('../../core/openaiService').openaiService;
 
 describe('LocalEmbeddingGenerator', () => {
   let generator: LocalEmbeddingGenerator;
@@ -74,7 +99,7 @@ describe('LocalEmbeddingGenerator', () => {
     // Setup apiClient mock with successful response
     mockApiClient = {
       post: jest.fn().mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
+        data: { embeddings: [[0.1, 0.2, 0.3]] },
       }),
       generateEmbeddings: jest.fn().mockResolvedValue({
         embeddings: [[0.1, 0.2, 0.3]],
@@ -96,6 +121,39 @@ describe('LocalEmbeddingGenerator', () => {
       debug: jest.fn(),
     } as any;
 
+    // Setup globby mock to return test files
+    const mockProjectPath = '/path/to/test/project';
+    const mockGlobby = jest
+      .fn()
+      .mockResolvedValue([
+        require('path').join(mockProjectPath, 'src', 'index.ts'),
+        require('path').join(mockProjectPath, 'src', 'utils.ts'),
+        require('path').join(mockProjectPath, 'package.json'),
+      ]);
+    (require('globby') as any).globby = mockGlobby;
+
+    // Setup fs mocks for file operations
+    const mockFs = {
+      readFileSync: jest.fn((filePath: string) => {
+        if (filePath.includes('index.ts')) {
+          return 'export function hello() { return "world"; }';
+        } else if (filePath.includes('utils.ts')) {
+          return 'export const util = "test";';
+        } else if (filePath.includes('package.json')) {
+          return '{"name": "test", "version": "1.0.0"}';
+        }
+        return '';
+      }),
+      statSync: jest.fn(() => ({
+        mtime: new Date(),
+        size: 100,
+        isFile: () => true,
+        isDirectory: () => false,
+      })),
+    };
+    (require('fs') as any).readFileSync = mockFs.readFileSync;
+    (require('fs') as any).statSync = mockFs.statSync;
+
     // Apply mocks
     (apiClient as any).post = mockApiClient.post;
     (apiClient as any).generateEmbeddings = mockApiClient.generateEmbeddings;
@@ -108,6 +166,9 @@ describe('LocalEmbeddingGenerator', () => {
     process.env.USE_LOCAL_EMBEDDINGS = 'true';
     process.env.LOCAL_EMBEDDING_MODEL = 'all-MiniLM-L6-v2'; // Required for local provider selection
     process.env.AMBIANCE_API_KEY = process.env.AMBIANCE_API_KEY || 'test-key';
+
+    // Setup getDefaultLocalProvider mock to return our mock provider
+    (getDefaultLocalProvider as jest.Mock).mockReturnValue(mockLocalProvider);
 
     // Create generator with mock storage to avoid constructor issues
     generator = new LocalEmbeddingGenerator(mockStorage);
@@ -167,7 +228,7 @@ describe('LocalEmbeddingGenerator', () => {
 
     test('should initialize database on generation start', async () => {
       mockApiClient.post.mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
+        data: { embeddings: [[0.1, 0.2, 0.3]] },
       });
 
       await generator.generateProjectEmbeddings(mockProjectId, mockProjectPath);
@@ -177,7 +238,7 @@ describe('LocalEmbeddingGenerator', () => {
 
     test('should process files and return progress', async () => {
       mockApiClient.post.mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
+        data: { embeddings: [[0.1, 0.2, 0.3]] },
       });
 
       const result = await generator.generateProjectEmbeddings(mockProjectId, mockProjectPath);
@@ -193,7 +254,7 @@ describe('LocalEmbeddingGenerator', () => {
 
     test('should handle force regeneration option', async () => {
       mockApiClient.post.mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
+        data: { embeddings: [[0.1, 0.2, 0.3]] },
       });
 
       const options: GenerationOptions = { force: true };
@@ -205,18 +266,18 @@ describe('LocalEmbeddingGenerator', () => {
 
     test('should respect batch size configuration', async () => {
       mockApiClient.post.mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
+        data: { embeddings: [[0.1, 0.2, 0.3]] },
       });
 
       const options: GenerationOptions = { batchSize: 16 };
       await generator.generateProjectEmbeddings(mockProjectId, mockProjectPath, options);
 
-      expect(mockApiClient.generateEmbeddings).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
     });
 
     test('should handle rate limiting', async () => {
       mockApiClient.post.mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
+        data: { embeddings: [[0.1, 0.2, 0.3]] },
       });
 
       const options: GenerationOptions = { rateLimit: 100 };
@@ -231,33 +292,57 @@ describe('LocalEmbeddingGenerator', () => {
 
     test('should handle file patterns filter', async () => {
       mockApiClient.post.mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
+        data: { embeddings: [[0.1, 0.2, 0.3]] },
       });
 
       const options: GenerationOptions = { filePatterns: ['*.ts'] };
       await generator.generateProjectEmbeddings(mockProjectId, mockProjectPath, options);
 
-      expect(mockApiClient.generateEmbeddings).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
     });
 
     test('should handle parallel mode', async () => {
       mockApiClient.post.mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
+        data: { embeddings: [[0.1, 0.2, 0.3]] },
       });
 
       const options: GenerationOptions = { parallelMode: true, maxConcurrency: 5 };
       await generator.generateProjectEmbeddings(mockProjectId, mockProjectPath, options);
 
-      expect(mockApiClient.generateEmbeddings).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
     });
 
     test('should handle API errors gracefully', async () => {
+      // Clear any previous provider failures
+      // @ts-ignore - accessing private static for testing
+      LocalEmbeddingGenerator.providerFailures.clear();
+
+      // Set up to use OpenAI provider
+      process.env.USE_OPENAI_EMBEDDINGS = 'true';
+      process.env.OPENAI_API_KEY = 'test-key';
+      mockOpenAIService.isReady.mockReturnValue(true);
+      mockOpenAIService.getClient.mockReturnValue({}); // Mock OpenAI client as available
+
+      // Create generator with OpenAI enabled
+      const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
+
       mockApiClient.generateEmbeddings.mockRejectedValue(new Error('API Error'));
 
-      const result = await generator.generateProjectEmbeddings(mockProjectId, mockProjectPath);
+      const result = await openaiGenerator.generateProjectEmbeddings(
+        mockProjectId,
+        mockProjectPath
+      );
 
+      // Method catches errors and adds them to progress.errors instead of throwing
       expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors[0]).toContain('API Error');
       expect(mockLogger.error).toHaveBeenCalled();
+
+      // Clean up
+      delete process.env.USE_OPENAI_EMBEDDINGS;
+      delete process.env.OPENAI_API_KEY;
+      mockOpenAIService.isReady.mockReset();
+      mockOpenAIService.getClient.mockReset();
     });
 
     test('should handle chunking options', async () => {
@@ -269,7 +354,7 @@ describe('LocalEmbeddingGenerator', () => {
         encoding_format: 'float32',
         total_tokens: 10,
         processing_time_ms: 100,
-        provider: 'voyage'
+        provider: 'voyage',
       });
 
       const options: GenerationOptions = {
@@ -281,7 +366,7 @@ describe('LocalEmbeddingGenerator', () => {
 
       await generator.generateProjectEmbeddings(mockProjectId, mockProjectPath, options);
 
-      expect(mockApiClient.generateEmbeddings).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
     });
   });
 
@@ -295,7 +380,7 @@ describe('LocalEmbeddingGenerator', () => {
         encoding_format: 'float32',
         total_tokens: 10,
         processing_time_ms: 100,
-        provider: 'voyage'
+        provider: 'voyage',
       });
 
       const result = await generator.generateQueryEmbedding('test query');
@@ -306,26 +391,55 @@ describe('LocalEmbeddingGenerator', () => {
     });
 
     test('should handle empty query', async () => {
+      // Set up to use OpenAI provider
+      process.env.USE_OPENAI_EMBEDDINGS = 'true';
+      process.env.OPENAI_API_KEY = 'test-key';
+
       mockApiClient.generateEmbeddings.mockResolvedValue({
         embeddings: [[]],
-        model: process.env.VOYAGEAI_MODEL || 'voyageai-model',
-        dimensions: 0,
+        model: 'text-embedding-3-small',
+        dimensions: 1536,
         input_type: 'document',
         encoding_format: 'float32',
         total_tokens: 10,
         processing_time_ms: 100,
-        provider: 'voyage'
+        provider: 'openai',
       });
 
       const result = await generator.generateQueryEmbedding('');
 
       expect(Array.isArray(result)).toBe(true);
+
+      // Clean up
+      delete process.env.USE_OPENAI_EMBEDDINGS;
+      delete process.env.OPENAI_API_KEY;
     });
 
     test('should handle API errors in query embedding', async () => {
+      // Clear any previous provider failures
+      // @ts-ignore - accessing private static for testing
+      LocalEmbeddingGenerator.providerFailures.clear();
+
+      // Set up to use OpenAI provider and disable local embeddings
+      process.env.USE_OPENAI_EMBEDDINGS = 'true';
+      process.env.OPENAI_API_KEY = 'test-key';
+      process.env.USE_LOCAL_EMBEDDINGS = 'false'; // Disable local fallback
+      mockOpenAIService.isReady.mockReturnValue(true);
+      mockOpenAIService.getClient.mockReturnValue({}); // Mock OpenAI client as available
+
+      // Create generator with OpenAI enabled and local disabled
+      const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
+
       mockApiClient.generateEmbeddings.mockRejectedValue(new Error('API Error'));
 
-      await expect(generator.generateQueryEmbedding('test')).rejects.toThrow();
+      await expect(openaiGenerator.generateQueryEmbedding('test')).rejects.toThrow();
+
+      // Clean up
+      delete process.env.USE_OPENAI_EMBEDDINGS;
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.USE_LOCAL_EMBEDDINGS;
+      mockOpenAIService.isReady.mockReset();
+      mockOpenAIService.getClient.mockReset();
     });
 
     test('should use project-specific embedding generation when projectId provided', async () => {
@@ -337,12 +451,12 @@ describe('LocalEmbeddingGenerator', () => {
         encoding_format: 'float32',
         total_tokens: 10,
         processing_time_ms: 100,
-        provider: 'voyage'
+        provider: 'voyage',
       });
 
       await generator.generateQueryEmbedding('test', 'project-123');
 
-      expect(mockApiClient.generateEmbeddings).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
     });
   });
 
@@ -372,44 +486,77 @@ describe('LocalEmbeddingGenerator', () => {
       // Should not call Ambiance API since local is prioritized
       expect(mockApiClient.generateEmbeddings).not.toHaveBeenCalled();
       // Should call local provider instead
-      expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
     });
 
     test('should use local provider by default even when Ambiance API key is available', async () => {
       // Keep LOCAL_EMBEDDING_MODEL set but add Ambiance API key
       process.env.AMBIANCE_API_KEY = process.env.AMBIANCE_API_KEY || 'test-key';
       mockApiClient.post.mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
+        data: { embeddings: [[0.1, 0.2, 0.3]] },
       });
 
       await generator.generateQueryEmbedding('test');
 
       // Should not call Ambiance API unless explicitly enabled
       expect(mockApiClient.generateEmbeddings).not.toHaveBeenCalled();
-      expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
     });
 
-    test('should handle local provider errors and fallback to Ambiance API only when explicitly enabled', async () => {
+    test('should handle local provider errors and fallback to OpenAI when explicitly enabled', async () => {
+      // Clear any previous provider failures
+      // @ts-ignore - accessing private static for testing
+      LocalEmbeddingGenerator.providerFailures.clear();
+
       // Mock local provider to throw error
-      (LocalEmbeddingProvider as jest.Mock).mockImplementation(() => {
-        throw new Error('Local provider failed');
+      const failingLocalProvider = {
+        generateEmbeddings: jest.fn().mockRejectedValue(new Error('Local provider failed')),
+        generateQueryEmbedding: jest.fn().mockRejectedValue(new Error('Local provider failed')),
+        getModelInfo: jest.fn().mockReturnValue({
+          name: 'all-MiniLM-L6-v2',
+          dimensions: 384,
+          provider: 'transformers.js',
+        }),
+        dispose: jest.fn().mockResolvedValue(undefined),
+      };
+
+      // Enable OpenAI explicitly as fallback
+      process.env.USE_OPENAI_EMBEDDINGS = 'true';
+      process.env.OPENAI_API_KEY = 'test-key';
+      mockOpenAIService.isReady.mockReturnValue(true);
+      mockOpenAIService.getClient.mockReturnValue({}); // Mock OpenAI client as available
+
+      // Create generator with OpenAI enabled
+      const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
+
+      // Mock getDefaultLocalProvider to return the failing provider for this generator
+      (getDefaultLocalProvider as jest.Mock).mockReturnValue(failingLocalProvider);
+
+      mockApiClient.generateEmbeddings.mockResolvedValue({
+        embeddings: [[0.1, 0.2, 0.3]],
+        model: 'text-embedding-3-small',
+        dimensions: 1536,
+        input_type: 'document',
+        encoding_format: 'float32',
+        total_tokens: 10,
+        processing_time_ms: 100,
+        provider: 'openai',
       });
 
-      // Enable Ambiance API explicitly
-      process.env.USE_VOYAGEAI_EMBEDDINGS = 'true';
-      process.env.AMBIANCE_API_KEY = process.env.AMBIANCE_API_KEY || 'test-key';
+      const result = await openaiGenerator.generateQueryEmbedding('test');
 
-      mockApiClient.post.mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
-      });
-
-      const result = await generator.generateQueryEmbedding('test');
-
+      expect(failingLocalProvider.generateEmbeddings).toHaveBeenCalled();
       expect(mockApiClient.generateEmbeddings).toHaveBeenCalled();
       expect(mockLogger.error).toHaveBeenCalled();
+      expect(result).toEqual([0.1, 0.2, 0.3]);
 
       // Clean up
-      delete process.env.USE_VOYAGEAI_EMBEDDINGS;
+      delete process.env.USE_OPENAI_EMBEDDINGS;
+      delete process.env.OPENAI_API_KEY;
+      mockOpenAIService.isReady.mockReset();
+      mockOpenAIService.getClient.mockReset();
+      // Restore original mock
+      (getDefaultLocalProvider as jest.Mock).mockReturnValue(mockLocalProvider);
     });
 
     test('should handle missing API keys with local provider', async () => {
@@ -419,7 +566,7 @@ describe('LocalEmbeddingGenerator', () => {
       // Should still work with local provider
       const result = await generator.generateQueryEmbedding('test');
 
-      expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
       expect(mockApiClient.generateEmbeddings).not.toHaveBeenCalled();
     });
   });
@@ -428,42 +575,59 @@ describe('LocalEmbeddingGenerator', () => {
     test('should handle database initialization errors', async () => {
       mockStorage.initializeDatabase.mockRejectedValue(new Error('DB Error'));
 
-      await expect(
-        generator.generateProjectEmbeddings('test', '/path')
-      ).rejects.toThrow('DB Error');
+      await expect(generator.generateProjectEmbeddings('test', '/path')).rejects.toThrow(
+        'DB Error'
+      );
     });
 
     test('should handle dimension compatibility errors', async () => {
       mockStorage.ensureDimensionCompatibility.mockRejectedValue(new Error('Dimension mismatch'));
 
-      await expect(
-        generator.generateProjectEmbeddings('test', '/path')
-      ).rejects.toThrow('Dimension mismatch');
+      await expect(generator.generateProjectEmbeddings('test', '/path')).rejects.toThrow(
+        'Dimension mismatch'
+      );
     });
 
     test('should handle file system errors', async () => {
-      // Mock fs to throw error - this will be handled by the existing fs mock
-      jest.doMock('fs', () => ({
-        ...jest.requireActual('fs'),
-        readdirSync: jest.fn().mockImplementation(() => {
-          throw new Error('File system error');
-        })
-      }));
+      // Mock globby to throw error (this is what getProjectFiles actually uses)
+      const mockGlobby = jest.fn().mockRejectedValue(new Error('File system error'));
+      (require('globby') as any).globby = mockGlobby;
 
-      await expect(
-        generator.generateProjectEmbeddings('test', '/invalid/path')
-      ).rejects.toThrow('File system error');
+      const result = await generator.generateProjectEmbeddings('test', '/invalid/path');
+
+      // Method catches errors and adds them to progress.errors instead of throwing
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors[0]).toContain('File system error');
+
+      // Restore original mock
+      (require('globby') as any).globby = jest
+        .fn()
+        .mockResolvedValue([
+          require('path').join('/path/to/test/project', 'src', 'index.ts'),
+          require('path').join('/path/to/test/project', 'src', 'utils.ts'),
+          require('path').join('/path/to/test/project', 'package.json'),
+        ]);
     });
 
     test('should handle invalid project paths', async () => {
-      jest.doMock('fs', () => ({
-        ...jest.requireActual('fs'),
-        existsSync: jest.fn().mockReturnValue(false)
-      }));
+      // Mock globby to throw error for invalid paths
+      const mockGlobby = jest.fn().mockRejectedValue(new Error('Invalid project path'));
+      (require('globby') as any).globby = mockGlobby;
 
-      await expect(
-        generator.generateProjectEmbeddings('test', '/nonexistent/path')
-      ).rejects.toThrow();
+      const result = await generator.generateProjectEmbeddings('test', '/nonexistent/path');
+
+      // Method catches errors and adds them to progress.errors instead of throwing
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors[0]).toContain('Invalid project path');
+
+      // Restore original mock
+      (require('globby') as any).globby = jest
+        .fn()
+        .mockResolvedValue([
+          require('path').join('/path/to/test/project', 'src', 'index.ts'),
+          require('path').join('/path/to/test/project', 'src', 'utils.ts'),
+          require('path').join('/path/to/test/project', 'package.json'),
+        ]);
     });
   });
 
@@ -476,7 +640,7 @@ describe('LocalEmbeddingGenerator', () => {
       await generator.generateProjectEmbeddings('test', '/path');
 
       // With local provider prioritized, should call local provider instead of Ambiance API
-      expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
       expect(mockApiClient.generateEmbeddings).not.toHaveBeenCalled();
     });
 
@@ -489,7 +653,7 @@ describe('LocalEmbeddingGenerator', () => {
       await generator.generateProjectEmbeddings('test', '/path');
 
       // Should use default values with local provider
-      expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
       expect(mockApiClient.generateEmbeddings).not.toHaveBeenCalled();
     });
   });
@@ -505,45 +669,62 @@ describe('LocalEmbeddingGenerator', () => {
       expect(progress).toHaveProperty('embeddings', expect.any(Number));
       expect(progress).toHaveProperty('errors', expect.any(Array));
       // Should use local provider instead of Ambiance API
-      expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
       expect(mockApiClient.generateEmbeddings).not.toHaveBeenCalled();
     });
 
     test('should track errors in progress', async () => {
+      // Mock local provider to throw error during embedding generation
+      const originalGenerateEmbeddings = mockLocalProvider.generateEmbeddings;
+      mockLocalProvider.generateEmbeddings.mockRejectedValue(
+        new Error('Embedding generation failed')
+      );
+
       const progress = await generator.generateProjectEmbeddings('test', '/path');
 
       expect(progress.errors.length).toBeGreaterThan(0);
       expect(progress.errors[0]).toContain('Failed to generate embeddings');
       // Should use local provider even with errors
-      expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
       expect(mockApiClient.generateEmbeddings).not.toHaveBeenCalled();
+
+      // Restore original mock
+      mockLocalProvider.generateEmbeddings = originalGenerateEmbeddings;
     });
   });
 
   describe('Edge Cases', () => {
     test('should handle empty file list', async () => {
-      jest.doMock('fs', () => ({
-        ...jest.requireActual('fs'),
-        readdirSync: jest.fn().mockReturnValue([])
-      }));
+      // Mock globby to return empty array
+      const mockGlobby = jest.fn().mockResolvedValue([]);
+      (require('globby') as any).globby = mockGlobby;
 
       const progress = await generator.generateProjectEmbeddings('test', '/empty/path');
 
       expect(progress.totalFiles).toBe(0);
       expect(progress.processedFiles).toBe(0);
+
+      // Restore original mock
+      (require('globby') as any).globby = jest
+        .fn()
+        .mockResolvedValue([
+          require('path').join('/path/to/test/project', 'src', 'index.ts'),
+          require('path').join('/path/to/test/project', 'src', 'utils.ts'),
+          require('path').join('/path/to/test/project', 'package.json'),
+        ]);
     });
 
     test('should handle files with no content', async () => {
       jest.doMock('fs', () => ({
         ...jest.requireActual('fs'),
-        readFileSync: jest.fn().mockReturnValue('')
+        readFileSync: jest.fn().mockReturnValue(''),
       }));
 
       const progress = await generator.generateProjectEmbeddings('test', '/path');
 
       expect(progress.processedFiles).toBeGreaterThan(0);
       // Should use local provider instead of Ambiance API
-      expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
       expect(mockApiClient.generateEmbeddings).not.toHaveBeenCalled();
     });
 
@@ -551,13 +732,13 @@ describe('LocalEmbeddingGenerator', () => {
       const largeContent = 'x'.repeat(100000); // 100KB file
       jest.doMock('fs', () => ({
         ...jest.requireActual('fs'),
-        readFileSync: jest.fn().mockReturnValue(largeContent)
+        readFileSync: jest.fn().mockReturnValue(largeContent),
       }));
 
       await generator.generateProjectEmbeddings('test', '/path');
 
       // Should use local provider instead of Ambiance API
-      expect(mockLocalProvider.generateQueryEmbedding).toHaveBeenCalled();
+      expect(mockLocalProvider.generateEmbeddings).toHaveBeenCalled();
       expect(mockApiClient.generateEmbeddings).not.toHaveBeenCalled();
     });
   });

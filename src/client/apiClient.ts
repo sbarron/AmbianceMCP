@@ -1,4 +1,4 @@
-/**
+/** DEPRECATED - TEST FOR REMOVAL
  * @fileOverview: HTTP client for Ambiance API (Cloud) with semantic search and context retrieval capabilities
  * @module: AmbianceAPIClient
  * @keyFunctions:

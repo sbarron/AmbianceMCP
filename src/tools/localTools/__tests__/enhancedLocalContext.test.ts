@@ -28,22 +28,22 @@ const SAMPLE_FILES: FileInfo[] = [
     relPath: 'src/database/connection.ts',
     size: 2048,
     ext: '.ts',
-    language: 'typescript'
+    language: 'typescript',
   },
   {
     absPath: path.join(FIXTURE_PROJECT_PATH, 'src', 'api', 'routes.ts'),
     relPath: 'src/api/routes.ts',
     size: 1536,
     ext: '.ts',
-    language: 'typescript'
+    language: 'typescript',
   },
   {
     absPath: path.join(FIXTURE_PROJECT_PATH, 'src', 'auth', 'middleware.ts'),
     relPath: 'src/auth/middleware.ts',
     size: 1024,
     ext: '.ts',
-    language: 'typescript'
-  }
+    language: 'typescript',
+  },
 ];
 
 const SAMPLE_DATABASE_CONTENT = `
@@ -88,7 +88,7 @@ export default router;
 // Mock file system for test fixtures
 jest.mock('fs', () => ({
   ...jest.requireActual('fs'),
-  readFileSync: jest.fn()
+  readFileSync: jest.fn(),
 }));
 
 const mockReadFileSync = fs.readFileSync as jest.MockedFunction<typeof fs.readFileSync>;
@@ -96,7 +96,7 @@ const mockReadFileSync = fs.readFileSync as jest.MockedFunction<typeof fs.readFi
 beforeEach(() => {
   mockReadFileSync.mockImplementation((filePath: any) => {
     const pathStr = filePath.toString();
-    
+
     if (pathStr.includes('connection.ts')) {
       return SAMPLE_DATABASE_CONTENT;
     } else if (pathStr.includes('routes.ts')) {
@@ -112,7 +112,7 @@ export function authenticateUser(req: any, res: any, next: any) {
 }
       `;
     }
-    
+
     return 'export default {};';
   });
 });
@@ -122,36 +122,30 @@ export function authenticateUser(req: any, res: any, next: any) {
 describe('Enhanced Local Context - Unit Tests', () => {
   describe('AST Query Engine', () => {
     it('should find import queries correctly', async () => {
-      const queries = [
-        { kind: 'import' as const, source: /better-sqlite3/ }
-      ];
-      
+      const queries = [{ kind: 'import' as const, source: /better-sqlite3/ }];
+
       const results = await runAstQueriesOnFiles(SAMPLE_FILES.slice(0, 1), queries, 10);
-      
+
       expect(results).toHaveLength(1);
       expect(results[0].symbol).toContain('better-sqlite3');
       expect(results[0].kind).toBe('import');
     });
 
     it('should find export queries correctly', async () => {
-      const queries = [
-        { kind: 'export' as const, name: /initialize/ }
-      ];
-      
+      const queries = [{ kind: 'export' as const, name: /initialize/ }];
+
       const results = await runAstQueriesOnFiles(SAMPLE_FILES.slice(0, 1), queries, 10);
-      
+
       expect(results).toHaveLength(1);
       expect(results[0].symbol).toContain('initializeDatabase');
       expect(results[0].kind).toBe('export');
     });
 
     it('should find function calls correctly', async () => {
-      const queries = [
-        { kind: 'call' as const, callee: /prepare/ }
-      ];
-      
+      const queries = [{ kind: 'call' as const, callee: /prepare/ }];
+
       const results = await runAstQueriesOnFiles(SAMPLE_FILES.slice(0, 1), queries, 10);
-      
+
       expect(results.length).toBeGreaterThan(0);
       expect(results.some(r => r.symbol.includes('prepare'))).toBe(true);
     });
@@ -168,7 +162,7 @@ describe('Enhanced Local Context - Unit Tests', () => {
           kind: 'function',
           score: 0,
           reasons: ['database initialization'],
-          role: 'initialization'
+          role: 'initialization',
         },
         {
           file: 'src/utils/helper.ts',
@@ -178,8 +172,8 @@ describe('Enhanced Local Context - Unit Tests', () => {
           kind: 'function',
           score: 0,
           reasons: ['utility function'],
-          role: 'helper'
-        }
+          role: 'helper',
+        },
       ];
 
       const mockProjectContext = {
@@ -188,7 +182,7 @@ describe('Enhanced Local Context - Unit Tests', () => {
         imports: [],
         routes: [],
         env: [],
-        systems: {}
+        systems: {},
       };
 
       const ranked = await rankCandidatesWithScoring(
@@ -214,15 +208,15 @@ describe('Enhanced Local Context - Unit Tests', () => {
           end: 200,
           role: 'DB init',
           confidence: 0.9,
-          why: ['database initialization function']
-        }
+          why: ['database initialization function'],
+        },
       ];
 
       const mockIndices = {
         systems: {
-          db: { engine: 'SQLite' }
+          db: { engine: 'SQLite' },
         },
-        env: ['DB_PATH']
+        env: ['DB_PATH'],
       };
 
       const answer = generateDeterministicAnswer(
@@ -240,12 +234,7 @@ describe('Enhanced Local Context - Unit Tests', () => {
     });
 
     it('should handle missing template gracefully', () => {
-      const answer = generateDeterministicAnswer(
-        'unknown-plan',
-        'unknown-task',
-        [],
-        {}
-      );
+      const answer = generateDeterministicAnswer('unknown-plan', 'unknown-task', [], {});
 
       expect(answer).toBeTruthy();
       expect(answer).toContain('unknown-plan');
@@ -258,7 +247,7 @@ describe('Enhanced Local Context - Unit Tests', () => {
 describe('Enhanced Local Context - Integration Tests', () => {
   // Mock the project detection and file discovery
   jest.mock('../../../tools/utils/pathUtils', () => ({
-    detectWorkspaceDirectory: () => FIXTURE_PROJECT_PATH
+    detectWorkspaceDirectory: () => FIXTURE_PROJECT_PATH,
   }));
 
   it('should handle database queries end-to-end', async () => {
@@ -268,7 +257,7 @@ describe('Enhanced Local Context - Integration Tests', () => {
       taskType: 'understand',
       maxTokens: 2000,
       maxSimilarChunks: 10,
-      useProjectHintsCache: false // Disable for testing
+      useProjectHintsCache: false, // Disable for testing
     };
 
     const result = await localContext(request);
@@ -277,11 +266,12 @@ describe('Enhanced Local Context - Integration Tests', () => {
     expect(result.answerDraft).toBeTruthy();
     expect(result.jumpTargets.length).toBeGreaterThan(0);
     expect(result.metadata.filesScanned).toBeGreaterThan(0);
-    
+
     // Check that database-related symbols were found
-    const hasDbSymbols = result.jumpTargets.some(target => 
-      target.symbol.toLowerCase().includes('database') ||
-      target.symbol.toLowerCase().includes('init')
+    const hasDbSymbols = result.jumpTargets.some(
+      target =>
+        target.symbol.toLowerCase().includes('database') ||
+        target.symbol.toLowerCase().includes('init')
     );
     expect(hasDbSymbols).toBe(true);
   });
@@ -294,18 +284,17 @@ describe('Enhanced Local Context - Integration Tests', () => {
       attackPlan: 'api-route',
       maxTokens: 2000,
       maxSimilarChunks: 10,
-      useProjectHintsCache: false
+      useProjectHintsCache: false,
     };
 
     const result = await localContext(request);
 
     expect(result.success).toBe(true);
     expect(result.answerDraft).toContain('API');
-    
+
     // Should find route-related symbols
-    const hasRouteSymbols = result.jumpTargets.some(target =>
-      target.file.includes('routes') ||
-      target.symbol.toLowerCase().includes('router')
+    const hasRouteSymbols = result.jumpTargets.some(
+      target => target.file.includes('routes') || target.symbol.toLowerCase().includes('router')
     );
     expect(hasRouteSymbols).toBe(true);
   });
@@ -317,7 +306,7 @@ describe('Enhanced Local Context - Integration Tests', () => {
       taskType: 'understand',
       maxTokens: 500, // Very small budget
       maxSimilarChunks: 20,
-      useProjectHintsCache: false
+      useProjectHintsCache: false,
     };
 
     const result = await localContext(request);
@@ -336,7 +325,7 @@ describe('Enhanced Local Context - Integration Tests', () => {
       kind: 'function',
       score: 0,
       reasons: [],
-      role: 'helper'
+      role: 'helper',
     } as any;
     const legit = {
       file: 'src/middleware/auth.ts',
@@ -346,7 +335,7 @@ describe('Enhanced Local Context - Integration Tests', () => {
       kind: 'export',
       score: 0,
       reasons: ['middleware'],
-      role: 'middleware'
+      role: 'middleware',
     } as any;
 
     const ranked = await rankCandidatesWithScoring(
@@ -366,7 +355,7 @@ describe('Enhanced Local Context - Integration Tests', () => {
       query: 'auth supabase login',
       taskType: 'understand',
       maxTokens: 1000,
-      useProjectHintsCache: false
+      useProjectHintsCache: false,
     };
 
     const result = await localContext(request);
@@ -382,7 +371,7 @@ describe('Enhanced Local Context - Integration Tests', () => {
 
 describe('Enhanced Local Context - Golden Tests', () => {
   // These tests ensure deterministic output for regression testing
-  
+
   it('should produce consistent output for database query', async () => {
     const request: LocalContextRequest = {
       projectPath: FIXTURE_PROJECT_PATH,
@@ -391,7 +380,7 @@ describe('Enhanced Local Context - Golden Tests', () => {
       attackPlan: 'init-read-write',
       maxTokens: 1500,
       maxSimilarChunks: 5,
-      useProjectHintsCache: false
+      useProjectHintsCache: false,
     };
 
     const result1 = await localContext(request);
@@ -409,7 +398,7 @@ describe('Enhanced Local Context - Golden Tests', () => {
       query: 'test query',
       taskType: 'debug',
       maxTokens: 1000,
-      useProjectHintsCache: false
+      useProjectHintsCache: false,
     };
 
     const result = await localContext(request);
@@ -420,13 +409,13 @@ describe('Enhanced Local Context - Golden Tests', () => {
       originalTokens: expect.any(Number),
       compactedTokens: expect.any(Number),
       bundleTokens: expect.any(Number),
-      processingTimeMs: expect.any(Number)
+      processingTimeMs: expect.any(Number),
     });
 
     expect(result.next).toMatchObject({
       mode: expect.stringMatching(/^(code_lookup|project_research|implementation_ready)$/),
       openFiles: expect.any(Array),
-      checks: expect.any(Array)
+      checks: expect.any(Array),
     });
   });
 });
@@ -436,14 +425,14 @@ describe('Enhanced Local Context - Golden Tests', () => {
 describe('Enhanced Local Context - Performance Tests', () => {
   it('should complete analysis within reasonable time', async () => {
     const startTime = Date.now();
-    
+
     const request: LocalContextRequest = {
       projectPath: FIXTURE_PROJECT_PATH,
       query: 'comprehensive code analysis',
       taskType: 'understand',
       maxTokens: 3000,
       maxSimilarChunks: 20,
-      useProjectHintsCache: false
+      useProjectHintsCache: false,
     };
 
     const result = await localContext(request);
@@ -462,7 +451,7 @@ describe('Enhanced Local Context - Performance Tests', () => {
       relPath: `src/file${i}.ts`,
       size: 1024,
       ext: '.ts',
-      language: 'typescript' as const
+      language: 'typescript' as const,
     }));
 
     mockReadFileSync.mockReturnValue('export const test = "value";');
@@ -473,7 +462,7 @@ describe('Enhanced Local Context - Performance Tests', () => {
       taskType: 'test',
       maxTokens: 2000,
       maxSimilarChunks: 30,
-      useProjectHintsCache: false
+      useProjectHintsCache: false,
     };
 
     const result = await localContext(request);
@@ -492,7 +481,7 @@ describe('Enhanced Local Context - Error Handling', () => {
       query: '', // Empty query
       taskType: 'understand',
       maxTokens: 1000,
-      useProjectHintsCache: false
+      useProjectHintsCache: false,
     };
 
     const result = await localContext(request);
@@ -512,7 +501,7 @@ describe('Enhanced Local Context - Error Handling', () => {
       query: 'analyze missing files',
       taskType: 'debug',
       maxTokens: 1000,
-      useProjectHintsCache: false
+      useProjectHintsCache: false,
     };
 
     const result = await localContext(request);
@@ -529,7 +518,7 @@ describe('Enhanced Local Context - Error Handling', () => {
       taskType: 'understand',
       maxTokens: 100, // Very small limit
       maxSimilarChunks: 50, // Large chunk request
-      useProjectHintsCache: false
+      useProjectHintsCache: false,
     };
 
     const result = await localContext(request);
@@ -547,6 +536,10 @@ function createMockFileInfo(relPath: string, content: string): FileInfo {
     relPath,
     size: content.length,
     ext: path.extname(relPath),
-    language: relPath.endsWith('.ts') ? 'typescript' : relPath.endsWith('.js') ? 'javascript' : 'typescript'
+    language: relPath.endsWith('.ts')
+      ? 'typescript'
+      : relPath.endsWith('.js')
+        ? 'javascript'
+        : 'typescript',
   };
 }

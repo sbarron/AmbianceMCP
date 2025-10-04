@@ -86,7 +86,7 @@ describe('AmbianceMCPServer', () => {
         '🔍 Environment key presence',
         expect.objectContaining({
           OPENAI_API_KEY: 'unset',
-          AMBIANCE_API_KEY: 'unset'
+          AMBIANCE_API_KEY: 'unset',
         })
       );
 
@@ -104,7 +104,7 @@ describe('AmbianceMCPServer', () => {
         '🔍 Environment key presence',
         expect.objectContaining({
           OPENAI_API_KEY: 'set',
-          AMBIANCE_API_KEY: 'unset'
+          AMBIANCE_API_KEY: 'unset',
         })
       );
     });
@@ -119,7 +119,7 @@ describe('AmbianceMCPServer', () => {
         '🔍 Environment key presence',
         expect.objectContaining({
           OPENAI_API_KEY: 'unset',
-          AMBIANCE_API_KEY: 'set'
+          AMBIANCE_API_KEY: 'set',
         })
       );
     });
@@ -134,7 +134,7 @@ describe('AmbianceMCPServer', () => {
         '🔍 Environment key presence',
         expect.objectContaining({
           OPENAI_API_KEY: 'set',
-          AMBIANCE_API_KEY: 'set'
+          AMBIANCE_API_KEY: 'set',
         })
       );
     });

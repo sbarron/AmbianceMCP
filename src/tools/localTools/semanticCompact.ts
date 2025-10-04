@@ -50,7 +50,8 @@ export const localSemanticCompactTool = {
         default: 20,
         minimum: 5,
         maximum: 50,
-        description: 'Maximum number of semantically similar code chunks to retrieve. Higher values (30-50) provide broader coverage for exploration; lower values (10-15) focus on highly relevant matches. Default 20 balances breadth and relevance.',
+        description:
+          'Maximum number of semantically similar code chunks to retrieve. Higher values (30-50) provide broader coverage for exploration; lower values (10-15) focus on highly relevant matches. Default 20 balances breadth and relevance.',
       },
       maxTokens: {
         type: 'number',
@@ -84,7 +85,7 @@ export const localSemanticCompactTool = {
       },
       projectPath: {
         type: 'string',
-        description: 'Project directory path. Can be absolute or relative to workspace.',
+        description: 'Project directory path. Required. Can be absolute or relative to workspace.',
       },
       folderPath: {
         type: 'string',
@@ -108,10 +109,11 @@ export const localSemanticCompactTool = {
         default: 0.2,
         minimum: 0.0,
         maximum: 1.0,
-        description: 'Minimum similarity score (0.0-1.0) for including chunks. Lower values (0.15-0.2) cast a wider net for related code; higher values (0.25-0.35) return only close matches. Use lower thresholds when exploring unfamiliar code.',
+        description:
+          'Minimum similarity score (0.0-1.0) for including chunks. Lower values (0.15-0.2) cast a wider net for related code; higher values (0.25-0.35) return only close matches. Use lower thresholds when exploring unfamiliar code.',
       },
     },
-    required: ['query'],
+    required: ['query', 'projectPath'],
   },
 };
 

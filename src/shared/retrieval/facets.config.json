@@ -201,21 +201,7 @@
       "isAuthenticated",
       "requireAuth"
     ],
-    "routing": [
-      "app.use",
-      "app.get",
-      "app.post",
-      "app.put",
-      "app.delete",
-      "router",
-      "middleware"
-    ],
-    "data": [
-      "supabase",
-      "prisma",
-      "createClient",
-      "database",
-      "query"
-    ]
+    "routing": ["app.use", "app.get", "app.post", "app.put", "app.delete", "router", "middleware"],
+    "data": ["supabase", "prisma", "createClient", "database", "query"]
   }
 }

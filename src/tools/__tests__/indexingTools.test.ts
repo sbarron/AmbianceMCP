@@ -60,23 +60,25 @@ describe('Indexing Tools Integration', () => {
 
   describe('Tool Definitions', () => {
     it('should export correct number of tools', () => {
-      const indexingTools = ambianceTools.filter(tool => 
-        tool.name.includes('auto_detect_index') || 
-        tool.name.includes('index_project') || 
-        tool.name.includes('reset_indexes') || 
-        tool.name.includes('watching') || 
-        tool.name.includes('indexing_status')
+      const indexingTools = ambianceTools.filter(
+        tool =>
+          tool.name.includes('auto_detect_index') ||
+          tool.name.includes('index_project') ||
+          tool.name.includes('reset_indexes') ||
+          tool.name.includes('watching') ||
+          tool.name.includes('indexing_status')
       );
       expect(indexingTools).toHaveLength(6);
     });
 
     it('should have all required tool properties', () => {
-      const indexingTools = ambianceTools.filter(tool => 
-        tool.name.includes('auto_detect_index') || 
-        tool.name.includes('index_project') || 
-        tool.name.includes('reset_indexes') || 
-        tool.name.includes('watching') || 
-        tool.name.includes('indexing_status')
+      const indexingTools = ambianceTools.filter(
+        tool =>
+          tool.name.includes('auto_detect_index') ||
+          tool.name.includes('index_project') ||
+          tool.name.includes('reset_indexes') ||
+          tool.name.includes('watching') ||
+          tool.name.includes('indexing_status')
       );
       indexingTools.forEach(tool => {
         expect(tool).toHaveProperty('name');
@@ -98,32 +100,39 @@ describe('Indexing Tools Integration', () => {
         'ambiance_get_indexing_status',
       ];
 
-      const actualNames = ambianceTools.filter(tool => 
-        tool.name.includes('auto_detect_index') || 
-        tool.name.includes('index_project') || 
-        tool.name.includes('reset_indexes') || 
-        tool.name.includes('watching') || 
-        tool.name.includes('indexing_status')
-      ).map(tool => tool.name);
+      const actualNames = ambianceTools
+        .filter(
+          tool =>
+            tool.name.includes('auto_detect_index') ||
+            tool.name.includes('index_project') ||
+            tool.name.includes('reset_indexes') ||
+            tool.name.includes('watching') ||
+            tool.name.includes('indexing_status')
+        )
+        .map(tool => tool.name);
       expect(actualNames).toEqual(expectedNames);
     });
   });
 
   describe('Tool Handler Mappings', () => {
     it('should have handlers for all tools', () => {
-      const indexingToolNames = ambianceTools.filter(tool => 
-        tool.name.includes('auto_detect_index') || 
-        tool.name.includes('index_project') || 
-        tool.name.includes('reset_indexes') || 
-        tool.name.includes('watching') || 
-        tool.name.includes('indexing_status')
-      ).map(tool => tool.name);
-      const indexingHandlerNames = Object.keys(ambianceHandlers).filter(name => 
-        name.includes('auto_detect_index') || 
-        name.includes('index_project') || 
-        name.includes('reset_indexes') || 
-        name.includes('watching') || 
-        name.includes('indexing_status')
+      const indexingToolNames = ambianceTools
+        .filter(
+          tool =>
+            tool.name.includes('auto_detect_index') ||
+            tool.name.includes('index_project') ||
+            tool.name.includes('reset_indexes') ||
+            tool.name.includes('watching') ||
+            tool.name.includes('indexing_status')
+        )
+        .map(tool => tool.name);
+      const indexingHandlerNames = Object.keys(ambianceHandlers).filter(
+        name =>
+          name.includes('auto_detect_index') ||
+          name.includes('index_project') ||
+          name.includes('reset_indexes') ||
+          name.includes('watching') ||
+          name.includes('indexing_status')
       );
 
       indexingToolNames.forEach(name => {
@@ -488,7 +497,9 @@ describe('Indexing Tools Integration', () => {
             status: mockSessions[1].status,
             filesFound: mockSessions[1].filesFound,
             filesProcessed: mockSessions[1].filesProcessed,
-            progress: Math.round((mockSessions[1].filesProcessed / mockSessions[1].filesFound) * 100),
+            progress: Math.round(
+              (mockSessions[1].filesProcessed / mockSessions[1].filesFound) * 100
+            ),
             startTime: mockSessions[1].startTime,
             errors: 0,
           },

@@ -25,8 +25,12 @@ function extractRoutesFromContent(content: string, filePath: string): RouteItem[
   const routes: RouteItem[] = [];
 
   // Skip UI files (.tsx, .jsx files in web/ or components/ directories)
-  if (filePath.includes('page.tsx') || filePath.includes('page.jsx') ||
-      filePath.includes('/web/') || filePath.includes('/components/')) {
+  if (
+    filePath.includes('page.tsx') ||
+    filePath.includes('page.jsx') ||
+    filePath.includes('/web/') ||
+    filePath.includes('/components/')
+  ) {
     return routes;
   }
 
@@ -81,7 +85,7 @@ describe('Verifier #1: Framework-aware Routes', () => {
         return <div>Login</div>;
       };
     `;
-    
+
     // This should return empty since it's a .tsx file
     const routes = extractRoutesFromContent(content, 'web/app/portal/dashboard/page.tsx');
     expect(routes).toHaveLength(0);
@@ -97,7 +101,7 @@ describe('Verifier #1: Framework-aware Routes', () => {
         return Response.json({ success: true });
       }
     `;
-    
+
     const routes = extractRoutesFromContent(content, 'app/api/users/route.ts');
     expect(routes).toHaveLength(2);
     expect(routes[0].method).toBe('get');
@@ -112,7 +116,7 @@ describe('Verifier #1: Framework-aware Routes', () => {
       // This should be ignored - variable path
       app.get(dynamicPath, handler);
     `;
-    
+
     const routes = extractRoutesFromContent(content, 'server/routes/users.ts');
     expect(routes).toHaveLength(2);
     expect(routes.every((r: RouteItem) => r.path.startsWith('/'))).toBe(true);
@@ -127,14 +131,14 @@ describe('Verifier #3: Build Artifacts Exclusion', () => {
       createMockFile('src/utils/helper.ts'),
       createMockFile('dist/utils/helper.js'),
     ];
-    
+
     // The preferSourceOverBuild method should keep only src/utils/helper.ts
     const srcFile = files.find(f => f.relPath.includes('src/'));
     const distFile = files.find(f => f.relPath.includes('dist/'));
-    
+
     expect(srcFile).toBeDefined();
     expect(distFile).toBeDefined();
-    
+
     // In practice, the FileDiscovery.preferSourceOverBuild would filter this
     // expect(preferredFiles).toHaveLength(1);
     // expect(preferredFiles[0].relPath).toBe('src/utils/helper.ts');
@@ -149,10 +153,10 @@ describe('Evidence-based Confidence Scoring', () => {
       { file: 'config.ts', line: 5, match: 'DATABASE_URL', type: 'env' as const },
       { file: 'query.ts', line: 10, match: 'SELECT * FROM users', type: 'usage' as const },
     ];
-    
+
     const confidence = Math.min(1, hits.length / threshold);
     expect(confidence).toBe(1.0); // 3/3 = 1.0
-    
+
     const partialHits = hits.slice(0, 1);
     const partialConfidence = Math.min(1, partialHits.length / threshold);
     expect(partialConfidence).toBeCloseTo(0.33, 2); // 1/3 ≈ 0.33
@@ -166,7 +170,7 @@ describe('Symbol Deduplication', () => {
       { name: 'authenticate', kind: 'function', file: 'auth.ts', line: 10 },
       { name: 'authenticate', kind: 'function', file: 'auth.ts', line: 15 },
     ];
-    
+
     // The deduplicateExports function should collapse these
     // expect(deduped).toHaveLength(1);
     // expect(deduped[0].jsdoc).toContain('2 definitions at lines 10-15');
@@ -178,44 +182,48 @@ describe('Risk Detection Rules', () => {
   it('should identify ENV-002 pattern (server env in client)', () => {
     const webFiles = [createMockFile('web/components/dashboard.tsx')];
     const serverOnlyEnvKeys = [
-      { key: 'DATABASE_URL', file: 'web/components/dashboard.tsx', line: 5, usage: 'read' as const }
+      {
+        key: 'DATABASE_URL',
+        file: 'web/components/dashboard.tsx',
+        line: 5,
+        usage: 'read' as const,
+      },
     ];
-    
-    const webEnvLeaks = webFiles.filter(webFile => 
+
+    const webEnvLeaks = webFiles.filter(webFile =>
       serverOnlyEnvKeys.some(env => env.file === webFile.relPath)
     );
-    
+
     expect(webEnvLeaks).toHaveLength(1);
     expect(webEnvLeaks[0].relPath).toContain('web/components/');
   });
-  
+
   it('should identify API-AUTH-001 pattern (unguarded API routes)', () => {
     const apiRoutes = [createMockFile('app/api/users/route.ts')];
     const hasAuthSystem = false; // No auth exports found
-    
+
     if (apiRoutes.length > 0 && !hasAuthSystem) {
       const riskDetected = true;
       expect(riskDetected).toBe(true);
     }
   });
-  
+
   it('should identify BUILD-001 pattern (build artifacts included)', () => {
     const files = [
       createMockFile('src/index.ts'),
       createMockFile('dist/index.js'),
       createMockFile('.next/static/chunks/main.js'),
     ];
-    
+
     const buildArtifacts = files.filter(f => {
       const normalized = f.relPath.toLowerCase();
-      return normalized.startsWith('dist/') ||
-             normalized.includes('.next/');
+      return normalized.startsWith('dist/') || normalized.includes('.next/');
     });
-    
+
     expect(buildArtifacts).toHaveLength(2);
-    expect(buildArtifacts.every(f => 
-      f.relPath.includes('dist') || f.relPath.includes('.next')
-    )).toBe(true);
+    expect(
+      buildArtifacts.every(f => f.relPath.includes('dist') || f.relPath.includes('.next'))
+    ).toBe(true);
   });
 });
 
@@ -226,26 +234,26 @@ describe('Output Contract Invariants', () => {
       { name: 'alpha', file: 'a.ts' },
       { name: 'beta', file: 'c.ts' },
     ];
-    
+
     const sorted = items.sort((a, b) => a.name.localeCompare(b.name));
     expect(sorted[0].name).toBe('alpha');
     expect(sorted[1].name).toBe('beta');
     expect(sorted[2].name).toBe('zebra');
   });
-  
+
   it('should enforce bounded results', () => {
     const mockItems = Array.from({ length: 250 }, (_, i) => ({ name: `item${i}` }));
     const bounded = mockItems.slice(0, 200); // Max exports = 200
     const truncated = mockItems.length > 200;
-    
+
     expect(bounded).toHaveLength(200);
     expect(truncated).toBe(true);
   });
-  
+
   it('should normalize paths consistently', () => {
     const windowsPath = 'src\\components\\Button.tsx';
     const posixPath = windowsPath.replace(/\\/g, '/');
-    
+
     expect(posixPath).toBe('src/components/Button.tsx');
     expect(posixPath).not.toContain('\\');
   });

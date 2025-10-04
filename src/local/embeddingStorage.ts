@@ -64,6 +64,20 @@ export interface EmbeddingModelInfo {
   migrationNeeded: boolean;
 }
 
+export interface ProjectMetadata {
+  id: string;
+  name: string;
+  path: string;
+  type: 'git' | 'local';
+  gitRemoteUrl?: string;
+  gitBranch?: string;
+  gitCommitSha?: string;
+  workspaceRoot: string;
+  addedAt: Date;
+  lastIndexed?: Date;
+  updatedAt: Date;
+}
+
 export interface FileMetadata {
   id: string;
   projectId: string;
@@ -85,6 +99,21 @@ export interface ModelChangeResult {
   migrationRecommended: boolean;
 }
 
+export interface SchemaVersion {
+  version: number;
+  appliedAt: Date;
+  description: string;
+}
+
+// Current schema version - increment when making breaking changes
+export const CURRENT_SCHEMA_VERSION = 2;
+
+// Schema version history
+export const SCHEMA_VERSIONS = {
+  1: 'Initial schema with embeddings, project_stats, embedding_models',
+  2: 'Added projects table with foreign keys, files table',
+};
+
 export class LocalEmbeddingStorage {
   private db: Database | null = null;
   private dbPath: string;
@@ -98,6 +127,10 @@ export class LocalEmbeddingStorage {
 
   // Prepared statements for performance
   private insertStmt: Statement | null = null;
+  private insertProjectStmt: Statement | null = null;
+  private getProjectStmt: Statement | null = null;
+  private getProjectByPathStmt: Statement | null = null;
+  private updateProjectLastIndexedStmt: Statement | null = null;
   private updateStmt: Statement | null = null;
   private searchStmt: Statement | null = null;
   private projectStmt: Statement | null = null;
@@ -127,7 +160,7 @@ export class LocalEmbeddingStorage {
     }
 
     // Enable quantization by default for new installations, or based on explicit setting
-    this.enableQuantization = enableQuantization ?? (process.env.EMBEDDING_QUANTIZATION === 'true');
+    this.enableQuantization = enableQuantization ?? process.env.EMBEDDING_QUANTIZATION === 'true';
 
     // Initialize quota management
     this.enableQuotas = process.env.EMBEDDING_QUOTAS === 'true';
@@ -188,29 +221,203 @@ export class LocalEmbeddingStorage {
         return;
       }
 
-      // Check if we need to migrate from the old schema
+      // Check current schema version
       this.db.get(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings'",
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'",
         (err, row) => {
           if (err) {
             reject(err);
             return;
           }
 
-          const hasOldSchema = !!row;
-          this.migrateDatabaseIfNeeded(hasOldSchema)
-            .then(() => {
-              logger.info('✅ Database schema is up to date');
-              resolve();
-            })
-            .catch(reject);
+          if (!row) {
+            // No schema_version table = old database or new database
+            // Check if embeddings table exists (old database)
+            this.db!.get(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings'",
+              (embErr, embRow) => {
+                if (embErr) {
+                  reject(embErr);
+                  return;
+                }
+
+                if (embRow) {
+                  // Old database exists - FORCE MIGRATION
+                  this.forceSchemaUpgrade()
+                    .then(() => {
+                      logger.info('✅ Database schema upgraded successfully');
+                      resolve();
+                    })
+                    .catch(reject);
+                } else {
+                  // New database - create fresh schema
+                  this.createNewTables()
+                    .then(() => this.setSchemaVersion(CURRENT_SCHEMA_VERSION))
+                    .then(() => {
+                      logger.info('✅ Database schema is up to date');
+                      resolve();
+                    })
+                    .catch(reject);
+                }
+              }
+            );
+          } else {
+            // Schema version table exists - check version
+            this.db!.get(
+              'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
+              (verErr, verRow: any) => {
+                if (verErr) {
+                  reject(verErr);
+                  return;
+                }
+
+                const currentVersion = verRow?.version || 0;
+
+                if (currentVersion < CURRENT_SCHEMA_VERSION) {
+                  // Outdated schema - FORCE MIGRATION
+                  logger.warn('⚠️ Database schema is outdated', {
+                    current: currentVersion,
+                    required: CURRENT_SCHEMA_VERSION,
+                  });
+
+                  this.forceSchemaUpgrade()
+                    .then(() => {
+                      logger.info('✅ Database schema upgraded successfully');
+                      resolve();
+                    })
+                    .catch(reject);
+                } else if (currentVersion > CURRENT_SCHEMA_VERSION) {
+                  // Future schema version - cannot handle
+                  const error = new Error(
+                    `Database schema version ${currentVersion} is newer than supported version ${CURRENT_SCHEMA_VERSION}. ` +
+                      `Please upgrade the Ambiance MCP package.`
+                  );
+                  logger.error('❌ Database schema too new', {
+                    dbVersion: currentVersion,
+                    supportedVersion: CURRENT_SCHEMA_VERSION,
+                  });
+                  reject(error);
+                } else {
+                  // Schema is up to date
+                  logger.info('✅ Database schema is up to date');
+                  resolve();
+                }
+              }
+            );
+          }
         }
       );
     });
   }
 
   /**
-   * Migrate database schema if needed
+   * Force schema upgrade by backing up old data and recreating database
+   */
+  private async forceSchemaUpgrade(): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    logger.warn('🔧 Starting forced schema upgrade - this will clear existing embeddings');
+
+    // Create backup file path
+    const backupPath = `${this.dbPath}.backup.${Date.now()}`;
+
+    try {
+      // Close current database connection
+      await new Promise<void>((resolve, reject) => {
+        this.db!.close(err => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      // Backup the old database file
+      if (fs.existsSync(this.dbPath)) {
+        fs.copyFileSync(this.dbPath, backupPath);
+        logger.info('💾 Old database backed up', { backup: backupPath });
+      }
+
+      // Delete the old database file
+      if (fs.existsSync(this.dbPath)) {
+        fs.unlinkSync(this.dbPath);
+        logger.info('🗑️  Old database file deleted');
+      }
+
+      // Reopen database (creates new empty file)
+      await new Promise<void>((resolve, reject) => {
+        this.db = new Database(this.dbPath, err => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+
+      // Create new schema
+      await this.createNewTables();
+      await this.setSchemaVersion(CURRENT_SCHEMA_VERSION);
+
+      logger.warn('⚠️ Database schema upgraded - all existing embeddings cleared');
+      logger.info('💡 Backup saved at:', { path: backupPath });
+      logger.info('💡 Regenerate embeddings with: npx ambiance-mcp embeddings create');
+    } catch (error) {
+      logger.error('❌ Failed to upgrade schema', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      // Try to restore backup
+      if (fs.existsSync(backupPath)) {
+        try {
+          fs.copyFileSync(backupPath, this.dbPath);
+          logger.info('✅ Restored database from backup');
+        } catch (restoreError) {
+          logger.error('❌ Failed to restore backup', {
+            error: restoreError instanceof Error ? restoreError.message : String(restoreError),
+          });
+        }
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Set the schema version in the database
+   */
+  private setSchemaVersion(version: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        reject(new Error('Database not initialized'));
+        return;
+      }
+
+      const description =
+        SCHEMA_VERSIONS[version as keyof typeof SCHEMA_VERSIONS] || 'Unknown version';
+
+      this.db.run(
+        'INSERT OR REPLACE INTO schema_version (version, description) VALUES (?, ?)',
+        [version, description],
+        err => {
+          if (err) {
+            logger.error('❌ Failed to set schema version', {
+              error: err.message,
+              version,
+            });
+            reject(err);
+          } else {
+            logger.info('✅ Schema version set', { version, description });
+            resolve();
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   * Migrate database schema if needed (DEPRECATED - use forceSchemaUpgrade instead)
+   * @deprecated
    */
   private migrateDatabaseIfNeeded(hasOldSchema: boolean): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -333,6 +540,32 @@ export class LocalEmbeddingStorage {
       }
 
       const createTableSQL = `
+        -- Schema version tracking table
+        CREATE TABLE IF NOT EXISTS schema_version (
+          version INTEGER PRIMARY KEY,
+          applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          description TEXT NOT NULL
+        );
+
+        -- Create projects table as the authoritative source for project metadata
+        CREATE TABLE IF NOT EXISTS projects (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL UNIQUE,
+          type TEXT NOT NULL,
+          git_remote_url TEXT,
+          git_branch TEXT,
+          git_commit_sha TEXT,
+          workspace_root TEXT NOT NULL,
+          added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          last_indexed DATETIME,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_projects_path ON projects(path);
+        CREATE INDEX IF NOT EXISTS idx_projects_workspace_root ON projects(workspace_root);
+        CREATE INDEX IF NOT EXISTS idx_projects_type ON projects(type);
+
         -- Create files table for file metadata tracking (similar to online database)
         CREATE TABLE IF NOT EXISTS files (
           id TEXT PRIMARY KEY,
@@ -344,7 +577,8 @@ export class LocalEmbeddingStorage {
           language TEXT,
           line_count INTEGER,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
 
         CREATE INDEX IF NOT EXISTS idx_files_project_id ON files(project_id);
@@ -370,7 +604,9 @@ export class LocalEmbeddingStorage {
           metadata_embedding_provider TEXT,
           hash TEXT NOT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
         );
 
         CREATE INDEX IF NOT EXISTS idx_project_id ON embeddings(project_id);
@@ -393,7 +629,8 @@ export class LocalEmbeddingStorage {
           project_id TEXT PRIMARY KEY,
           total_chunks INTEGER DEFAULT 0,
           total_files INTEGER DEFAULT 0,
-          last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+          last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
 
         -- Create a table for tracking embedding model configurations
@@ -403,7 +640,8 @@ export class LocalEmbeddingStorage {
           current_dimensions INTEGER NOT NULL,
           current_format TEXT NOT NULL,
           last_model_change DATETIME DEFAULT CURRENT_TIMESTAMP,
-          migration_needed BOOLEAN DEFAULT FALSE
+          migration_needed BOOLEAN DEFAULT FALSE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
       `;
 
@@ -424,6 +662,25 @@ export class LocalEmbeddingStorage {
    */
   private prepareStatements(): void {
     if (!this.db) return;
+
+    // Project management statements
+    this.insertProjectStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO projects (
+        id, name, path, type, git_remote_url, git_branch, git_commit_sha, workspace_root, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `);
+
+    this.getProjectStmt = this.db.prepare(`
+      SELECT * FROM projects WHERE id = ?
+    `);
+
+    this.getProjectByPathStmt = this.db.prepare(`
+      SELECT * FROM projects WHERE path = ?
+    `);
+
+    this.updateProjectLastIndexedStmt = this.db.prepare(`
+      UPDATE projects SET last_indexed = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `);
 
     // File management statements
     this.insertFileStmt = this.db.prepare(`
@@ -499,8 +756,8 @@ export class LocalEmbeddingStorage {
 
       throw new Error(
         `Storage quota exceeded for project ${chunk.projectId}. ` +
-        `Cannot store ${this.formatQuotaSize(estimatedSize)} of embedding data. ` +
-        `Consider increasing quota or clearing old embeddings.`
+          `Cannot store ${this.formatQuotaSize(estimatedSize)} of embedding data. ` +
+          `Consider increasing quota or clearing old embeddings.`
       );
     }
 
@@ -527,12 +784,17 @@ export class LocalEmbeddingStorage {
             chunkId: chunk.id,
             originalSize: chunk.embedding.length * 4,
             quantizedSize: embeddingToStore.data.length,
-            compressionRatio: ((chunk.embedding.length * 4) / embeddingToStore.data.length).toFixed(1),
+            compressionRatio: ((chunk.embedding.length * 4) / embeddingToStore.data.length).toFixed(
+              1
+            ),
           });
         } catch (quantizationError) {
           logger.warn('⚠️ Quantization failed, storing as float32', {
             chunkId: chunk.id,
-            error: quantizationError instanceof Error ? quantizationError.message : String(quantizationError),
+            error:
+              quantizationError instanceof Error
+                ? quantizationError.message
+                : String(quantizationError),
           });
           embeddingToStore = chunk.embedding;
           embeddingFormat = 'float32';
@@ -722,7 +984,10 @@ export class LocalEmbeddingStorage {
   /**
    * Get embeddings by format for a project (for compatibility checking)
    */
-  async getEmbeddingsByFormat(projectId: string, format: 'float32' | 'int8'): Promise<EmbeddingChunk[]> {
+  async getEmbeddingsByFormat(
+    projectId: string,
+    format: 'float32' | 'int8'
+  ): Promise<EmbeddingChunk[]> {
     if (!this.initialized) {
       await this.initializeDatabase();
     }
@@ -808,7 +1073,11 @@ export class LocalEmbeddingStorage {
   /**
    * Get embeddings with content matching a pattern (for content-based search)
    */
-  async searchEmbeddingsByContent(projectId: string, pattern: string, limit: number = 50): Promise<EmbeddingChunk[]> {
+  async searchEmbeddingsByContent(
+    projectId: string,
+    pattern: string,
+    limit: number = 50
+  ): Promise<EmbeddingChunk[]> {
     if (!this.initialized) {
       await this.initializeDatabase();
     }
@@ -907,7 +1176,10 @@ export class LocalEmbeddingStorage {
   /**
    * Calculate cosine similarity between two vectors (handles both quantized and float32)
    */
-  private cosineSimilarity(a: number[] | QuantizedEmbedding, b: number[] | QuantizedEmbedding): number {
+  private cosineSimilarity(
+    a: number[] | QuantizedEmbedding,
+    b: number[] | QuantizedEmbedding
+  ): number {
     // Normalize both embeddings to float32 arrays
     const aFloat32 = isQuantized(a) ? dequantizeInt8ToFloat32(a) : a;
     const bFloat32 = isQuantized(b) ? dequantizeInt8ToFloat32(b) : b;
@@ -1114,6 +1386,196 @@ export class LocalEmbeddingStorage {
           resolve(files);
         }
       });
+    });
+  }
+
+  /**
+   * Register or update a project in the database
+   */
+  async registerProject(project: ProjectMetadata): Promise<void> {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+
+    if (!this.insertProjectStmt) {
+      throw new Error('Database statements not prepared');
+    }
+
+    return new Promise((resolve, reject) => {
+      this.insertProjectStmt!.run(
+        [
+          project.id,
+          project.name,
+          project.path,
+          project.type,
+          project.gitRemoteUrl || null,
+          project.gitBranch || null,
+          project.gitCommitSha || null,
+          project.workspaceRoot,
+        ],
+        err => {
+          if (err) {
+            logger.error('❌ Failed to register project', {
+              error: err.message,
+              projectId: project.id,
+              path: project.path,
+            });
+            reject(err);
+          } else {
+            logger.debug('✅ Project registered', {
+              projectId: project.id,
+              name: project.name,
+              path: project.path,
+            });
+            resolve();
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   * Get project metadata by ID
+   */
+  async getProject(projectId: string): Promise<ProjectMetadata | null> {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+
+    if (!this.getProjectStmt) {
+      throw new Error('Database statements not prepared');
+    }
+
+    return new Promise((resolve, reject) => {
+      this.getProjectStmt!.get([projectId], (err, row: any) => {
+        if (err) {
+          logger.error('❌ Failed to get project', { error: err.message, projectId });
+          reject(err);
+        } else if (!row) {
+          resolve(null);
+        } else {
+          resolve({
+            id: row.id,
+            name: row.name,
+            path: row.path,
+            type: row.type,
+            gitRemoteUrl: row.git_remote_url,
+            gitBranch: row.git_branch,
+            gitCommitSha: row.git_commit_sha,
+            workspaceRoot: row.workspace_root,
+            addedAt: new Date(row.added_at),
+            lastIndexed: row.last_indexed ? new Date(row.last_indexed) : undefined,
+            updatedAt: new Date(row.updated_at),
+          });
+        }
+      });
+    });
+  }
+
+  /**
+   * Get project metadata by path
+   */
+  async getProjectByPath(projectPath: string): Promise<ProjectMetadata | null> {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+
+    if (!this.getProjectByPathStmt) {
+      throw new Error('Database statements not prepared');
+    }
+
+    return new Promise((resolve, reject) => {
+      this.getProjectByPathStmt!.get([projectPath], (err, row: any) => {
+        if (err) {
+          logger.error('❌ Failed to get project by path', { error: err.message, projectPath });
+          reject(err);
+        } else if (!row) {
+          resolve(null);
+        } else {
+          resolve({
+            id: row.id,
+            name: row.name,
+            path: row.path,
+            type: row.type,
+            gitRemoteUrl: row.git_remote_url,
+            gitBranch: row.git_branch,
+            gitCommitSha: row.git_commit_sha,
+            workspaceRoot: row.workspace_root,
+            addedAt: new Date(row.added_at),
+            lastIndexed: row.last_indexed ? new Date(row.last_indexed) : undefined,
+            updatedAt: new Date(row.updated_at),
+          });
+        }
+      });
+    });
+  }
+
+  /**
+   * Update project's last indexed timestamp
+   */
+  async updateProjectLastIndexed(projectId: string): Promise<void> {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+
+    if (!this.updateProjectLastIndexedStmt) {
+      throw new Error('Database statements not prepared');
+    }
+
+    return new Promise((resolve, reject) => {
+      this.updateProjectLastIndexedStmt!.run([projectId], err => {
+        if (err) {
+          logger.error('❌ Failed to update project last indexed', {
+            error: err.message,
+            projectId,
+          });
+          reject(err);
+        } else {
+          logger.debug('✅ Project last indexed timestamp updated', { projectId });
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
+   * List all registered projects
+   */
+  async listProjects(): Promise<ProjectMetadata[]> {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        reject(new Error('Database not initialized'));
+        return;
+      }
+
+      this.db.all(
+        'SELECT * FROM projects ORDER BY last_indexed DESC, added_at DESC',
+        (err, rows: any[]) => {
+          if (err) {
+            logger.error('❌ Failed to list projects', { error: err.message });
+            reject(err);
+          } else {
+            const projects = rows.map(row => ({
+              id: row.id,
+              name: row.name,
+              path: row.path,
+              type: row.type,
+              gitRemoteUrl: row.git_remote_url,
+              gitBranch: row.git_branch,
+              gitCommitSha: row.git_commit_sha,
+              workspaceRoot: row.workspace_root,
+              addedAt: new Date(row.added_at),
+              lastIndexed: row.last_indexed ? new Date(row.last_indexed) : undefined,
+              updatedAt: new Date(row.updated_at),
+            }));
+            resolve(projects);
+          }
+        }
+      );
     });
   }
 
@@ -1405,19 +1867,13 @@ export class LocalEmbeddingStorage {
         return;
       }
 
-      // Check for mixed dimensions and providers
-      this.db.all(
-        `SELECT 
-          metadata_embedding_provider, 
-          metadata_embedding_dimensions, 
-          COUNT(*) as count 
-        FROM embeddings 
-        WHERE project_id = ? 
-        GROUP BY metadata_embedding_provider, metadata_embedding_dimensions`,
+      // First, check the embedding_models table for the authoritative model info
+      this.db.get(
+        'SELECT * FROM embedding_models WHERE project_id = ?',
         [projectId],
-        (err, rows: any[]) => {
-          if (err) {
-            reject(err);
+        (modelErr, modelRow: any) => {
+          if (modelErr) {
+            reject(modelErr);
             return;
           }
 
@@ -1430,97 +1886,233 @@ export class LocalEmbeddingStorage {
             const l = (label || '').toLowerCase();
             if (l.startsWith('text-embedding-')) return 'openai';
             if (l.startsWith('voyage-') || l === 'voyageai' || l === 'ambiance') return 'voyageai';
-            if (l.includes('minilm') || l.includes('transformers') || l.includes('e5')) return 'local';
+            if (l.includes('minilm') || l.includes('transformers') || l.includes('e5'))
+              return 'local';
             return label;
           };
-          const merged: Record<string, { provider: string; dimensions: number; count: number }> =
-            {};
-          for (const r of rows) {
-            const key = `${norm(r.metadata_embedding_provider)}:${r.metadata_embedding_dimensions}`;
-            if (!merged[key]) {
-              merged[key] = {
-                provider: norm(r.metadata_embedding_provider),
-                dimensions: r.metadata_embedding_dimensions,
-                count: 0,
-              };
-            }
-            merged[key].count += r.count;
-          }
-          const mergedRows = Object.values(merged);
 
-          if (mergedRows.length > 1) {
-            compatible = false;
-            const modelSummary = mergedRows
-              .map(row => `${row.provider} (${row.dimensions}D): ${row.count} embeddings`)
-              .join(', ');
+          // If we have model info in the table, use that as the source of truth
+          if (modelRow) {
+            const storedProvider = norm(modelRow.current_provider);
+            const storedDimensions = modelRow.current_dimensions;
 
-            issues.push(`Mixed embedding models detected: ${modelSummary}`);
-            recommendations.push(
-              'Consider regenerating all embeddings with a single model for consistent similarity search results'
-            );
-          }
-
-          if (mergedRows.length === 0) {
-            issues.push('No embeddings found for this project');
-            recommendations.push('Generate embeddings for the project first');
-          }
-
-          // NEW: Check if stored embeddings match current model configuration
-          if (currentProvider && currentDimensions && mergedRows.length === 1) {
-            const storedModel = mergedRows[0];
-            const normalizedCurrentProvider = norm(currentProvider);
-            const normalizedStoredProvider = norm(storedModel.provider);
-
-            logger.debug('🔍 Checking embedding model compatibility', {
+            logger.debug('🔍 Checking embedding model compatibility using model table', {
               currentProvider,
               currentDimensions,
-              normalizedCurrentProvider,
-              storedProvider: storedModel.provider,
-              storedDimensions: storedModel.dimensions,
-              normalizedStoredProvider,
-              providerMatch: normalizedStoredProvider === normalizedCurrentProvider,
-              dimensionMatch: storedModel.dimensions === currentDimensions,
+              storedProvider,
+              storedDimensions,
+              modelRowExists: true,
+              providerMatch: currentProvider ? norm(currentProvider) === storedProvider : true,
+              dimensionMatch: currentDimensions ? storedDimensions === currentDimensions : true,
             });
 
-            if (
-              normalizedStoredProvider !== normalizedCurrentProvider ||
-              storedModel.dimensions !== currentDimensions
-            ) {
-              compatible = false;
-              issues.push(
-                `Stored embeddings (${normalizedStoredProvider}, ${storedModel.dimensions}D) don't match current model (${normalizedCurrentProvider}, ${currentDimensions}D)`
-              );
-              recommendations.push(
-                'Run migration to regenerate embeddings with the current model configuration'
-              );
-            }
-          }
+            // Check if current model matches stored model
+            if (currentProvider && currentDimensions) {
+              const normalizedCurrentProvider = norm(currentProvider);
 
-          // Check for null or invalid dimensions
-          this.db!.get(
-            'SELECT COUNT(*) as count FROM embeddings WHERE project_id = ? AND (metadata_embedding_dimensions IS NULL OR metadata_embedding_dimensions <= 0)',
-            [projectId],
-            (nullErr, nullRow: any) => {
-              if (nullErr) {
-                reject(nullErr);
-                return;
-              }
-
-              if (nullRow?.count > 0) {
+              if (
+                normalizedCurrentProvider !== storedProvider ||
+                storedDimensions !== currentDimensions
+              ) {
                 compatible = false;
                 issues.push(
-                  `${nullRow.count} embeddings have invalid or missing dimension information`
+                  `Stored model configuration (${storedProvider}, ${storedDimensions}D) doesn't match current model (${normalizedCurrentProvider}, ${currentDimensions}D)`
                 );
-                recommendations.push('Regenerate embeddings with proper metadata');
+                recommendations.push(
+                  'Run "manage_embeddings action=create" to regenerate embeddings with the current model configuration'
+                );
               }
-
-              resolve({
-                compatible,
-                issues,
-                recommendations,
-              });
             }
-          );
+
+            // Also check that stored embeddings match the model table info
+            this.db!.all(
+              `SELECT
+                metadata_embedding_provider,
+                metadata_embedding_dimensions,
+                COUNT(*) as count
+              FROM embeddings
+              WHERE project_id = ?
+              GROUP BY metadata_embedding_provider, metadata_embedding_dimensions`,
+              [projectId],
+              (embedErr, embedRows: any[]) => {
+                if (embedErr) {
+                  reject(embedErr);
+                  return;
+                }
+
+                const merged: Record<
+                  string,
+                  { provider: string; dimensions: number; count: number }
+                > = {};
+                for (const r of embedRows) {
+                  const key = `${norm(r.metadata_embedding_provider)}:${r.metadata_embedding_dimensions}`;
+                  if (!merged[key]) {
+                    merged[key] = {
+                      provider: norm(r.metadata_embedding_provider),
+                      dimensions: r.metadata_embedding_dimensions,
+                      count: 0,
+                    };
+                  }
+                  merged[key].count += r.count;
+                }
+                const mergedRows = Object.values(merged);
+
+                // Check for consistency between model table and stored embeddings
+                if (mergedRows.length > 0) {
+                  const modelTableProvider = storedProvider;
+                  const modelTableDimensions = storedDimensions;
+
+                  const inconsistentEmbeddings = mergedRows.filter(
+                    row =>
+                      row.provider !== modelTableProvider || row.dimensions !== modelTableDimensions
+                  );
+
+                  if (inconsistentEmbeddings.length > 0) {
+                    compatible = false;
+                    const inconsistencySummary = inconsistentEmbeddings
+                      .map(row => `${row.provider} (${row.dimensions}D): ${row.count} embeddings`)
+                      .join(', ');
+
+                    issues.push(
+                      `Stored embeddings don't match model configuration: ${inconsistencySummary} vs expected ${modelTableProvider} (${modelTableDimensions}D)`
+                    );
+                    recommendations.push(
+                      'Run "manage_embeddings action=create" to fix embedding metadata consistency'
+                    );
+                  }
+                }
+
+                // Check for null or invalid dimensions
+                this.db!.get(
+                  'SELECT COUNT(*) as count FROM embeddings WHERE project_id = ? AND (metadata_embedding_dimensions IS NULL OR metadata_embedding_dimensions <= 0)',
+                  [projectId],
+                  (nullErr, nullRow: any) => {
+                    if (nullErr) {
+                      reject(nullErr);
+                      return;
+                    }
+
+                    if (nullRow?.count > 0) {
+                      compatible = false;
+                      issues.push(
+                        `${nullRow.count} embeddings have invalid or missing dimension information`
+                      );
+                      recommendations.push('Regenerate embeddings with proper metadata');
+                    }
+
+                    resolve({
+                      compatible,
+                      issues,
+                      recommendations,
+                    });
+                  }
+                );
+              }
+            );
+          } else {
+            // Fallback to checking embeddings directly if no model info exists
+            logger.debug('🔍 No model info in table, falling back to embedding metadata check', {
+              modelRow: modelRow,
+              modelRowExists: !!modelRow,
+            });
+
+            this.db!.all(
+              `SELECT
+                metadata_embedding_provider,
+                metadata_embedding_dimensions,
+                COUNT(*) as count
+              FROM embeddings
+              WHERE project_id = ?
+              GROUP BY metadata_embedding_provider, metadata_embedding_dimensions`,
+              [projectId],
+              (embedErr, embedRows: any[]) => {
+                if (embedErr) {
+                  reject(embedErr);
+                  return;
+                }
+
+                const merged: Record<
+                  string,
+                  { provider: string; dimensions: number; count: number }
+                > = {};
+                for (const r of embedRows) {
+                  const key = `${norm(r.metadata_embedding_provider)}:${r.metadata_embedding_dimensions}`;
+                  if (!merged[key]) {
+                    merged[key] = {
+                      provider: norm(r.metadata_embedding_provider),
+                      dimensions: r.metadata_embedding_dimensions,
+                      count: 0,
+                    };
+                  }
+                  merged[key].count += r.count;
+                }
+                const mergedRows = Object.values(merged);
+
+                if (mergedRows.length > 1) {
+                  compatible = false;
+                  const modelSummary = mergedRows
+                    .map(row => `${row.provider} (${row.dimensions}D): ${row.count} embeddings`)
+                    .join(', ');
+
+                  issues.push(`Mixed embedding models detected: ${modelSummary}`);
+                  recommendations.push(
+                    'Consider regenerating all embeddings with a single model for consistent similarity search results'
+                  );
+                }
+
+                if (mergedRows.length === 0) {
+                  issues.push('No embeddings found for this project');
+                  recommendations.push('Generate embeddings for the project first');
+                }
+
+                // Check if stored embeddings match current model configuration
+                if (currentProvider && currentDimensions && mergedRows.length === 1) {
+                  const storedModel = mergedRows[0];
+                  const normalizedCurrentProvider = norm(currentProvider);
+                  const normalizedStoredProvider = norm(storedModel.provider);
+
+                  if (
+                    normalizedStoredProvider !== normalizedCurrentProvider ||
+                    storedModel.dimensions !== currentDimensions
+                  ) {
+                    compatible = false;
+                    issues.push(
+                      `Stored embeddings (${normalizedStoredProvider}, ${storedModel.dimensions}D) don't match current model (${normalizedCurrentProvider}, ${currentDimensions}D)`
+                    );
+                    recommendations.push(
+                      'Run "manage_embeddings action=create" to regenerate embeddings with the current model configuration'
+                    );
+                  }
+                }
+
+                // Check for null or invalid dimensions
+                this.db!.get(
+                  'SELECT COUNT(*) as count FROM embeddings WHERE project_id = ? AND (metadata_embedding_dimensions IS NULL OR metadata_embedding_dimensions <= 0)',
+                  [projectId],
+                  (nullErr, nullRow: any) => {
+                    if (nullErr) {
+                      reject(nullErr);
+                      return;
+                    }
+
+                    if (nullRow?.count > 0) {
+                      compatible = false;
+                      issues.push(
+                        `${nullRow.count} embeddings have invalid or missing dimension information`
+                      );
+                      recommendations.push('Regenerate embeddings with proper metadata');
+                    }
+
+                    resolve({
+                      compatible,
+                      issues,
+                      recommendations,
+                    });
+                  }
+                );
+              }
+            );
+          }
         }
       );
     });
@@ -1873,7 +2465,10 @@ export class LocalEmbeddingStorage {
   /**
    * Check if storing embeddings would exceed quota and enforce cleanup if needed
    */
-  private async checkAndEnforceQuota(projectId: string, newEmbeddingSize: number): Promise<{
+  private async checkAndEnforceQuota(
+    projectId: string,
+    newEmbeddingSize: number
+  ): Promise<{
     canStore: boolean;
     quotaExceeded: boolean;
     cleanupRequired: boolean;
@@ -1900,7 +2495,10 @@ export class LocalEmbeddingStorage {
       excess: this.formatQuotaSize(projectedUsage - quotaBytes),
     });
 
-    const cleanedEmbeddings = await this.cleanupOldEmbeddings(projectId, projectedUsage - quotaBytes);
+    const cleanedEmbeddings = await this.cleanupOldEmbeddings(
+      projectId,
+      projectedUsage - quotaBytes
+    );
 
     // Check again after cleanup
     const finalUsage = await this.getProjectStorageUsage(projectId);
@@ -1986,7 +2584,9 @@ export class LocalEmbeddingStorage {
                 [projectId, projectId, projectId],
                 (statsErr: Error | null) => {
                   if (statsErr) {
-                    logger.warn('⚠️ Failed to update project stats after cleanup', { error: statsErr.message });
+                    logger.warn('⚠️ Failed to update project stats after cleanup', {
+                      error: statsErr.message,
+                    });
                   }
                 }
               );
@@ -2145,12 +2745,14 @@ export class LocalEmbeddingStorage {
                 float32Embeddings: globalStats.float32_embeddings,
                 storageSavings,
                 averageCompressionRatio: compressionRatio,
-                projectStats: projStats ? {
-                  totalChunks: projStats.total_chunks,
-                  totalFiles: projStats.total_chunks, // Approximation
-                  quantizedChunks: projStats.quantized_chunks,
-                  float32Chunks: projStats.float32_chunks,
-                } : undefined,
+                projectStats: projStats
+                  ? {
+                      totalChunks: projStats.total_chunks,
+                      totalFiles: projStats.total_chunks, // Approximation
+                      quantizedChunks: projStats.quantized_chunks,
+                      float32Chunks: projStats.float32_chunks,
+                    }
+                  : undefined,
               });
             }
           );

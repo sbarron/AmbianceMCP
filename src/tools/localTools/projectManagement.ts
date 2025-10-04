@@ -505,7 +505,10 @@ export async function deleteProjectEmbeddings(args: {
 /**
  * Handle getting project embedding details
  */
-export async function getProjectEmbeddingDetails(args: { projectIdentifier: string }): Promise<{
+export async function getProjectEmbeddingDetails(args: {
+  projectIdentifier: string;
+  projectPath?: string;
+}): Promise<{
   project: LocalProject;
   stats: {
     totalChunks: number;
@@ -583,16 +586,18 @@ export async function getProjectEmbeddingDetails(args: { projectIdentifier: stri
         }
         if (stats) {
           // Found a project with this ID in the database - create a synthetic project object
-          // Try to determine the project path from the file paths in the database
-          const filesMetadata = await storage.listProjectFiles(projectIdentifier);
-          let projectPath = projectIdentifier; // fallback to using the ID as the name
+          let projectPath = args.projectPath || projectIdentifier; // Use provided path, fallback to ID
 
-          if (filesMetadata.length > 0) {
-            // Try to infer the project path from the common prefix of file paths
-            const filePaths = filesMetadata.map(f => f.path);
-            const commonPrefix = getCommonPathPrefix(filePaths);
-            if (commonPrefix) {
-              projectPath = path.dirname(commonPrefix);
+          // If no path was provided, try to determine the project path from the file paths in the database
+          if (!args.projectPath) {
+            const filesMetadata = await storage.listProjectFiles(projectIdentifier);
+            if (filesMetadata.length > 0) {
+              // Try to infer the project path from the common prefix of file paths
+              const filePaths = filesMetadata.map(f => f.path);
+              const commonPrefix = getCommonPathPrefix(filePaths);
+              if (commonPrefix) {
+                projectPath = path.dirname(commonPrefix);
+              }
             }
           }
 
@@ -651,6 +656,9 @@ export async function getProjectEmbeddingDetails(args: { projectIdentifier: stri
       }
 
       if (!project) {
+        logger.debug(
+          `Project not found in LocalProjectManager: ${projectIdentifier} - this is expected for projects without embeddings`
+        );
         throw new Error(
           `Project not found: ${projectIdentifier}. Make sure the project has been indexed with embeddings. Try manage_embeddings with action="list_projects" to see available projects.`
         );

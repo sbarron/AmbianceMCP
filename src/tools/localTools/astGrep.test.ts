@@ -89,14 +89,18 @@ describe('AST-Grep Pattern Validation', () => {
       const result = validateAstGrepPattern('function \\$NAME(\\$ARGS)');
       expect(result.isValid).toBe(false);
       expect(result.error).toContain('Regex escape sequences');
-      expect(result.suggestions).toContain('Remove backslashes - AST patterns use structural matching, not text matching');
+      expect(result.suggestions).toContain(
+        'Remove backslashes - AST patterns use structural matching, not text matching'
+      );
     });
 
     test('should reject regex groups', () => {
       const result = validateAstGrepPattern('(?i)pattern');
       expect(result.isValid).toBe(false);
       expect(result.error).toContain('Regex groups');
-      expect(result.suggestions).toContain('Use structural patterns with multiple searches instead');
+      expect(result.suggestions).toContain(
+        'Use structural patterns with multiple searches instead'
+      );
     });
   });
 
@@ -105,7 +109,9 @@ describe('AST-Grep Pattern Validation', () => {
       const result = validateAstGrepPattern('export $TYPE');
       expect(result.isValid).toBe(false);
       expect(result.error).toContain('ambiguous and cannot be parsed');
-      expect(result.suggestions).toContain('Example: "export const $NAME = $VALUE" instead of "export $TYPE"');
+      expect(result.suggestions).toContain(
+        'Example: "export const $NAME = $VALUE" instead of "export $TYPE"'
+      );
     });
 
     test('should reject ambiguous import patterns', () => {
@@ -119,7 +125,9 @@ describe('AST-Grep Pattern Validation', () => {
       const result = validateAstGrepPattern('function $FUNC');
       expect(result.isValid).toBe(false);
       expect(result.error).toContain('ambiguous and cannot be parsed');
-      expect(result.suggestions).toContain('Example: "function $NAME($ARGS) { $BODY }" instead of "function $FUNC"');
+      expect(result.suggestions).toContain(
+        'Example: "function $NAME($ARGS) { $BODY }" instead of "function $FUNC"'
+      );
     });
 
     test('should reject standalone metavariables', () => {
@@ -171,7 +179,9 @@ describe('AST-Grep Pattern Validation', () => {
     test('should suggest metavariables for export patterns', () => {
       const result = validateAstGrepPattern('export function test() { return 1; }');
       expect(result.isValid).toBe(true);
-      expect(result.suggestions).toContain('Use metavariables like $NAME for the exported identifier');
+      expect(result.suggestions).toContain(
+        'Use metavariables like $NAME for the exported identifier'
+      );
     });
 
     test('should suggest metavariables for class patterns', () => {
@@ -221,7 +231,7 @@ describe('AST-Grep Pattern Validation', () => {
         'const $NAME = require("express")',
         'express()',
         'app.use($MIDDLEWARE)',
-        'app.get("$ROUTE", $HANDLER)'
+        'app.get("$ROUTE", $HANDLER)',
       ];
 
       patterns.forEach(pattern => {
@@ -235,7 +245,7 @@ describe('AST-Grep Pattern Validation', () => {
         'export function $NAME($PROPS) { return $JSX }',
         'const $NAME = ($PROPS) => $JSX',
         'function $NAME() { const [$STATE, $SETTER] = useState($INITIAL) }',
-        'useEffect(() => { $EFFECT }, [$DEPS])'
+        'useEffect(() => { $EFFECT }, [$DEPS])',
       ];
 
       patterns.forEach(pattern => {
@@ -249,7 +259,7 @@ describe('AST-Grep Pattern Validation', () => {
         'await $DB.query("$SQL")',
         '$DB.findById($ID)',
         'new $CONNECTION("$URL")',
-        'mongoose.connect("$URI")'
+        'mongoose.connect("$URI")',
       ];
 
       patterns.forEach(pattern => {

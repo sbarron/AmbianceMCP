@@ -19,7 +19,8 @@ const mockProject: ProjectInfo = {
 };
 
 const mockCodeChunk: CodeChunk = {
-  content: 'function calculateTotal(items) { return items.reduce((sum, item) => sum + item.price, 0); }',
+  content:
+    'function calculateTotal(items) { return items.reduce((sum, item) => sum + item.price, 0); }',
   startLine: 10,
   endLine: 12,
   tokenEstimate: 15,
@@ -33,7 +34,8 @@ const mockCodeSymbol: CodeSymbol = {
   startLine: 10,
   endLine: 12,
   lang: 'typescript',
-  source: 'function calculateTotal(items) { return items.reduce((sum, item) => sum + item.price, 0); }',
+  source:
+    'function calculateTotal(items) { return items.reduce((sum, item) => sum + item.price, 0); }',
 };
 
 const mockIndexedFile: IndexedFile = {
@@ -213,10 +215,12 @@ describe('LocalSearch', () => {
       const shortFile: IndexedFile = {
         ...mockIndexedFile,
         content: shortContent,
-        chunks: [{
-          ...mockCodeChunk,
-          content: shortContent,
-        }],
+        chunks: [
+          {
+            ...mockCodeChunk,
+            content: shortContent,
+          },
+        ],
       };
 
       // Create long content with same matches
@@ -224,10 +228,12 @@ describe('LocalSearch', () => {
       const longFile: IndexedFile = {
         ...mockIndexedFile,
         content: longContent,
-        chunks: [{
-          ...mockCodeChunk,
-          content: longContent,
-        }],
+        chunks: [
+          {
+            ...mockCodeChunk,
+            content: longContent,
+          },
+        ],
       };
 
       await testSearch.indexFile(mockProject, shortFile);

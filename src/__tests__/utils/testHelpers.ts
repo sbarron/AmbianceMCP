@@ -23,7 +23,7 @@ export function createMockLogger() {
 export function createMockApiClient() {
   return {
     post: jest.fn().mockResolvedValue({
-      data: { embeddings: [[0.1, 0.2, 0.3]] }
+      data: { embeddings: [[0.1, 0.2, 0.3]] },
     }) as jest.MockedFunction<any>,
     get: jest.fn().mockResolvedValue({ data: {} }) as jest.MockedFunction<any>,
     put: jest.fn().mockResolvedValue({ data: {} }) as jest.MockedFunction<any>,
@@ -60,13 +60,15 @@ export function createMockOpenAIService() {
 export function createMockEmbeddingStorage() {
   return {
     initializeDatabase: jest.fn().mockResolvedValue(undefined) as jest.MockedFunction<any>,
-    ensureDimensionCompatibility: jest.fn().mockResolvedValue(undefined) as jest.MockedFunction<any>,
+    ensureDimensionCompatibility: jest
+      .fn()
+      .mockResolvedValue(undefined) as jest.MockedFunction<any>,
     storeEmbedding: jest.fn().mockResolvedValue(undefined) as jest.MockedFunction<any>,
     storeFileMetadata: jest.fn().mockResolvedValue(undefined) as jest.MockedFunction<any>,
     getEmbeddingMetadata: jest.fn().mockReturnValue({
       embeddingFormat: 'float32',
       embeddingDimensions: 1024,
-      embeddingProvider: 'voyageai'
+      embeddingProvider: 'voyageai',
     }) as jest.MockedFunction<any>,
     getProjectEmbeddings: jest.fn().mockResolvedValue([]) as jest.MockedFunction<any>,
     clearProjectEmbeddings: jest.fn().mockResolvedValue(undefined) as jest.MockedFunction<any>,
@@ -84,7 +86,7 @@ export function createMockFileSystem() {
       isFile: () => true,
       isDirectory: () => false,
       size: 1024,
-      mtime: new Date()
+      mtime: new Date(),
     }),
     readdirSync: jest.fn().mockReturnValue(['test1.ts', 'test2.ts']),
     readFileSync: jest.fn().mockReturnValue('function test() { return "test content"; }'),
@@ -97,7 +99,8 @@ export function createMockFileSystem() {
  * Standard test content that passes validation
  */
 export const VALID_TEST_CONTENT = {
-  shortMessage: 'This is a comprehensive test message with sufficient content to pass validation. It contains multiple sentences and provides meaningful context for testing functionality.',
+  shortMessage:
+    'This is a comprehensive test message with sufficient content to pass validation. It contains multiple sentences and provides meaningful context for testing functionality.',
   codeContent: `
 export function testFunction(): string {
   return 'test';
@@ -116,7 +119,10 @@ export class TestClass {
 }
   `,
   projectFiles: [
-    { name: 'index.ts', content: 'export { TestClass } from "./test";\nexport { testFunction } from "./utils";' },
+    {
+      name: 'index.ts',
+      content: 'export { TestClass } from "./test";\nexport { testFunction } from "./utils";',
+    },
     { name: 'test.ts', content: 'export class TestClass { constructor() {} }' },
     { name: 'utils.ts', content: 'export function testFunction() { return "test"; }' },
   ],
@@ -139,7 +145,7 @@ export function setupTestEnvironment(overrides: Record<string, string> = {}) {
   return {
     restore: () => {
       process.env = originalEnv;
-    }
+    },
   };
 }
 
@@ -166,7 +172,7 @@ export async function createTestProject(files: Array<{ name: string; content: st
     path: testDir,
     cleanup: async () => {
       await fs.promises.rm(testDir, { recursive: true, force: true });
-    }
+    },
   };
 }
 
@@ -221,5 +227,5 @@ export const TestPatterns = {
    */
   expectMockCalled(mock: jest.Mock) {
     expect(mock).toHaveBeenCalled();
-  }
+  },
 };

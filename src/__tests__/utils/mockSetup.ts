@@ -15,7 +15,7 @@ export function setupFsMocks() {
       isFile: () => true,
       isDirectory: () => false,
       size: 1024,
-      mtime: new Date()
+      mtime: new Date(),
     }),
     readdirSync: jest.fn().mockReturnValue(['test1.ts', 'test2.ts']),
     readFileSync: jest.fn().mockReturnValue('function test() { return "test content"; }'),
@@ -27,14 +27,14 @@ export function setupFsMocks() {
         isFile: () => true,
         isDirectory: () => false,
         size: 1024,
-        mtime: new Date()
+        mtime: new Date(),
       } as any),
       readFile: jest.fn().mockResolvedValue('function test() { return "test content"; }' as any),
       writeFile: jest.fn().mockResolvedValue(undefined as any),
       mkdir: jest.fn().mockResolvedValue(undefined as any),
       rm: jest.fn().mockResolvedValue(undefined as any),
       readdir: jest.fn().mockResolvedValue(['test1.ts', 'test2.ts'] as any),
-    }
+    },
   }));
 }
 
@@ -48,7 +48,7 @@ export function setupLoggerMocks() {
       warn: jest.fn(),
       error: jest.fn(),
       debug: jest.fn(),
-    }
+    },
   }));
 }
 
@@ -59,12 +59,12 @@ export function setupApiClientMocks() {
   jest.mock('../../client/apiClient', () => ({
     apiClient: {
       post: jest.fn().mockResolvedValue({
-        data: { embeddings: [[0.1, 0.2, 0.3]] }
+        data: { embeddings: [[0.1, 0.2, 0.3]] },
       } as any),
       get: jest.fn().mockResolvedValue({ data: {} } as any),
       put: jest.fn().mockResolvedValue({ data: {} } as any),
       delete: jest.fn().mockResolvedValue({ data: {} } as any),
-    }
+    },
   }));
 }
 
@@ -90,7 +90,7 @@ export function setupOpenAIMocks() {
         const task = args[0];
         return task === 'base' ? 'gpt-4o' : 'gpt-4o-mini';
       }),
-    }
+    },
   }));
 }
 
@@ -107,7 +107,7 @@ export function setupEmbeddingStorageMocks() {
       getEmbeddingMetadata: jest.fn().mockReturnValue({
         embeddingFormat: 'float32',
         embeddingDimensions: 1024,
-        embeddingProvider: 'voyageai'
+        embeddingProvider: 'voyageai',
       }),
       getProjectEmbeddings: jest.fn().mockResolvedValue([] as any),
       clearProjectEmbeddings: jest.fn().mockResolvedValue(undefined as any),
@@ -126,8 +126,8 @@ export function setupTreeSitterMocks() {
         {
           content: 'function test() { return "test"; }',
           symbols: ['test'],
-          metadata: { language: 'typescript' }
-        }
+          metadata: { language: 'typescript' },
+        },
       ] as any),
       dispose: jest.fn(),
     })),
@@ -183,7 +183,7 @@ export function setupTestEnvironment(overrides: Record<string, string> = {}) {
   return {
     restore: () => {
       process.env = originalEnv;
-    }
+    },
   };
 }
 

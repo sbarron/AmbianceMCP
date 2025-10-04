@@ -16,22 +16,22 @@ const mockFiles: FileInfo[] = [
     relPath: 'app/page.tsx',
     size: 100,
     ext: '.tsx',
-    language: 'typescript'
+    language: 'typescript',
   },
   {
     absPath: '/project/app/client-component.tsx',
     relPath: 'app/client-component.tsx',
     size: 120,
     ext: '.tsx',
-    language: 'typescript'
+    language: 'typescript',
   },
   {
     absPath: '/project/app/server-component.tsx',
     relPath: 'app/server-component.tsx',
     size: 110,
     ext: '.tsx',
-    language: 'typescript'
-  }
+    language: 'typescript',
+  },
 ];
 
 const mockComponents: ComponentInfo[] = [
@@ -40,15 +40,15 @@ const mockComponents: ComponentInfo[] = [
     file: 'app/client-component.tsx',
     kind: 'client',
     uses: {},
-    hooks: []
+    hooks: [],
   },
   {
     name: 'ServerComponent',
     file: 'app/server-component.tsx',
     kind: 'server',
     uses: {},
-    hooks: []
-  }
+    hooks: [],
+  },
 ];
 
 // Mock file contents for different scenarios
@@ -69,7 +69,7 @@ const fileContents = {
     // Server component - this should be allowed
     const serverKey = process.env.SERVER_API_KEY;
     const { NEXT_PUBLIC_APP_URL, INTERNAL_KEY } = process.env;
-  `
+  `,
 };
 
 describe('Environment Analyzer', () => {
@@ -92,8 +92,8 @@ describe('Environment Analyzer', () => {
           relPath: 'app/client.tsx',
           size: 100,
           ext: '.tsx',
-          language: 'typescript'
-        }
+          language: 'typescript',
+        },
       ];
       const testComponents = [
         {
@@ -101,8 +101,8 @@ describe('Environment Analyzer', () => {
           file: 'app/client.tsx',
           kind: 'client' as const,
           uses: {},
-          hooks: []
-        }
+          hooks: [],
+        },
       ];
 
       require('fs/promises').readFile = async () => `
@@ -148,8 +148,8 @@ describe('Environment Analyzer', () => {
       const result = await detectEnvironmentUsage(mockFiles, mockComponents);
 
       // Should not flag server variables used in server components
-      const serverLeaks = result.clientLeaks.filter((leak: any) =>
-        leak.file === 'app/server-component.tsx' || leak.file === 'app/page.tsx'
+      const serverLeaks = result.clientLeaks.filter(
+        (leak: any) => leak.file === 'app/server-component.tsx' || leak.file === 'app/page.tsx'
       );
       expect(serverLeaks.length).toBe(0);
     });
@@ -161,8 +161,8 @@ describe('Environment Analyzer', () => {
           relPath: 'app/client.tsx',
           size: 100,
           ext: '.tsx',
-          language: 'typescript'
-        }
+          language: 'typescript',
+        },
       ];
       const testComponents = [
         {
@@ -170,8 +170,8 @@ describe('Environment Analyzer', () => {
           file: 'app/client.tsx',
           kind: 'client' as const,
           uses: {},
-          hooks: []
-        }
+          hooks: [],
+        },
       ];
 
       require('fs/promises').readFile = async () => `
@@ -195,8 +195,8 @@ describe('Environment Analyzer', () => {
           relPath: 'app/server.tsx',
           size: 100,
           ext: '.tsx',
-          language: 'typescript'
-        }
+          language: 'typescript',
+        },
       ];
 
       require('fs/promises').readFile = async () => `
@@ -241,7 +241,7 @@ describe('Environment Analyzer', () => {
         'NEXT_PUBLIC_APP_URL',
         'API_SECRET',
         'DATABASE_URL',
-        'SERVER_KEY'
+        'SERVER_KEY',
       ]);
 
       // Test the internal categorization logic

@@ -11,7 +11,7 @@ import {
   createMockApiClient,
   createMockLogger,
   VALID_TEST_CONTENT,
-  TestPatterns
+  TestPatterns,
 } from '../utils/testHelpers';
 
 // Setup all standard mocks at the module level
@@ -32,7 +32,7 @@ describe('LocalEmbeddingGenerator (Standardized)', () => {
     const env = setupTestEnvironment({
       USE_LOCAL_EMBEDDINGS: 'true',
       LOCAL_EMBEDDING_MODEL: 'all-MiniLM-L6-v2',
-      AMBIANCE_API_KEY: 'test-key'
+      AMBIANCE_API_KEY: 'test-key',
     });
     envRestore = env.restore;
 
@@ -143,7 +143,7 @@ describe('LocalEmbeddingGenerator (Standardized)', () => {
 
     test('should handle empty query', async () => {
       mockApiClient.post.mockResolvedValue({
-        data: { embeddings: [[]] }
+        data: { embeddings: [[]] },
       });
 
       const result = await generator.generateQueryEmbedding('');
@@ -153,10 +153,7 @@ describe('LocalEmbeddingGenerator (Standardized)', () => {
     test('should handle API errors in query embedding', async () => {
       mockApiClient.post.mockRejectedValue(new Error('API Error'));
 
-      await TestPatterns.expectToThrow(
-        () => generator.generateQueryEmbedding('test'),
-        'API Error'
-      );
+      await TestPatterns.expectToThrow(() => generator.generateQueryEmbedding('test'), 'API Error');
     });
   });
 
@@ -198,7 +195,7 @@ describe('LocalEmbeddingGenerator (Standardized)', () => {
       const env = setupTestEnvironment({
         EMBEDDING_BATCH_SIZE: '16',
         EMBEDDING_MAX_CONCURRENCY: '5',
-        EMBEDDING_PARALLEL_MODE: 'true'
+        EMBEDDING_PARALLEL_MODE: 'true',
       });
 
       await generator.generateProjectEmbeddings('test', '/path');

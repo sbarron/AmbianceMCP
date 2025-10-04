@@ -1,10 +1,14 @@
 /**
- * @fileOverview: Workspace configuration tool for setting WORKSPACE_FOLDER safely
+ * @fileOverview: ⚠️ DEPRECATED - Workspace configuration tool (use manage_embeddings instead)
  * @module: WorkspaceConfig
+ * @deprecated: This tool has been merged into manage_embeddings. Use manage_embeddings with actions:
+ *   - get_workspace (replaces action="get")
+ *   - set_workspace (replaces action="set")
+ *   - validate_workspace (replaces action="validate")
  * @keyFunctions:
  *   - workspaceConfigTool: Tool definition for workspace configuration
  *   - handleWorkspaceConfig(): Handler for workspace configuration requests
- * @context: Allows agents to safely set workspace folder with validation
+ * @context: Kept for backward compatibility only. New code should use manage_embeddings.
  */
 
 import { logger } from '../../utils/logger';
@@ -189,7 +193,7 @@ async function generateEmbeddingsProactively(
 export const workspaceConfigTool = {
   name: 'workspace_config',
   description:
-    '🏠 Configure the workspace folder for the MCP server with safety validation and embedding status. Prevents setting root drives and directories with >1000 files to avoid performance issues. Automatically checks embedding compatibility and provides recommendations for AI tool optimization. Use this when you need to set the working directory for project analysis tools.',
+    '⚠️ DEPRECATED: Use manage_embeddings instead. This tool has been merged into manage_embeddings for unified workspace and embedding management. Use manage_embeddings with actions: get_workspace, set_workspace, or validate_workspace. This tool is kept for backward compatibility only.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -236,6 +240,7 @@ export const workspaceConfigTool = {
 
 /**
  * Handle workspace configuration requests
+ * @deprecated Use manage_embeddings with workspace actions instead
  */
 export async function handleWorkspaceConfig(args: any): Promise<any> {
   const {
@@ -247,7 +252,12 @@ export async function handleWorkspaceConfig(args: any): Promise<any> {
     force = false,
   } = args;
 
-  logger.info('🏠 Workspace configuration request', {
+  logger.warn('⚠️ workspace_config is deprecated - use manage_embeddings instead', {
+    action,
+    recommendation: `Use manage_embeddings with action="${action === 'get' ? 'get_workspace' : action === 'set' ? 'set_workspace' : 'validate_workspace'}"`,
+  });
+
+  logger.info('🏠 Workspace configuration request (deprecated tool)', {
     action,
     path,
     maxFiles,
@@ -408,7 +418,10 @@ async function handleSetWorkspace(
   logger.info('🔧 Workspace initialization flag set');
 
   // Check if we should proactively generate embeddings
-  const shouldGenerate = await shouldGenerateEmbeddingsProactively(validation.path!, validation.fileCount || 0);
+  const shouldGenerate = await shouldGenerateEmbeddingsProactively(
+    validation.path!,
+    validation.fileCount || 0
+  );
   logger.info('📊 Proactive embedding generation check', {
     shouldGenerate: shouldGenerate.shouldGenerate,
     reason: shouldGenerate.reason,
@@ -422,7 +435,10 @@ async function handleSetWorkspace(
     // Start proactive embedding generation in the background
     setTimeout(async () => {
       try {
-        const result = await generateEmbeddingsProactively(validation.path!, validation.fileCount || 0);
+        const result = await generateEmbeddingsProactively(
+          validation.path!,
+          validation.fileCount || 0
+        );
         if (result.success) {
           logger.info('✅ Background embedding generation completed', {
             workspace: validation.path,
@@ -443,7 +459,8 @@ async function handleSetWorkspace(
       }
     }, 100); // Small delay to let workspace_config return first
 
-    embeddingMessage = 'Starting background embedding generation for optimal AI tool performance...';
+    embeddingMessage =
+      'Starting background embedding generation for optimal AI tool performance...';
     logger.info('🚀 Triggered proactive embedding generation after workspace setup');
   } else {
     // Kick off auto-indexing in the background now that workspace is set

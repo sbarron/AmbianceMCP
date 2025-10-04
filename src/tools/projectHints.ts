@@ -833,7 +833,15 @@ Return JSON:
         temperature: 1,
       });
 
-      const result = JSON.parse(response.choices[0].message.content || '{}');
+      let content = response.choices[0].message.content || '{}';
+
+      // Extract JSON from markdown code blocks if present
+      const jsonMatch = content.match(/```json\s*\n?([\s\S]*?)\n?\s*```/);
+      if (jsonMatch) {
+        content = jsonMatch[1].trim();
+      }
+
+      const result = JSON.parse(content);
       return result;
     } catch (error) {
       logger.warn('AI analysis failed', {

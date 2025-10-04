@@ -1,6 +1,6 @@
 {
   "name": "@jackjackstudios/ambiance-mcp",
-  "version": "0.1.8",
+  "version": "0.2.1",
   "description": "MCP server for code context with semantic search, AI analysis and summary",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
@@ -9,12 +9,18 @@
   },
   "keywords": [
     "mcp",
-    "ide",
+    "mcp-server", 
+    "rag",
+    "cli",
     "code-analysis",
     "context",
-    "typescript",
     "semantic-search",
-    "ast"
+    "ast",
+    "embeddings",
+    "ai",
+    "offline",
+    "token-compression",
+    "typescript"
   ],
   "author": "Ambiance",
   "license": "MIT",
@@ -33,10 +39,11 @@
   "scripts": {
     "start": "node dist/src/index.js",
     "dev": "ts-node src/index.ts",
-    "build": "tsc --project tsconfig.json && npm run copy-facets-config",
+    "build": "tsc --project tsconfig.json && npm run copy-facets-config && npm run copy-schemas",
     "clean": "rimraf dist",
     "prebuild": "npm run clean",
     "copy-facets-config": "node -e \"require('fs').copyFileSync('src/shared/retrieval/facets.config.json', 'dist/src/shared/retrieval/facets.config.json')\"",
+    "copy-schemas": "node -e \"const fs = require('fs'); const path = require('path'); const src = 'src/tools/localTools/schemas'; const dest = 'dist/src/tools/localTools/schemas'; fs.mkdirSync(dest, {recursive: true}); fs.readdirSync(src).forEach(file => { if (file.endsWith('.json')) fs.copyFileSync(path.join(src, file), path.join(dest, file)); });\"",
     "lint": "eslint src/ scripts/ --ext .ts,.js",
     "lint:fix": "eslint src/ scripts/ --ext .ts,.js --fix",
     "format": "prettier --write \"src/**/*.{ts,js,json}\" \"tools/**/*.{ts,js,json}\" \"scripts/**/*.{ts,js,json}\" \"*.{json,md}\"",
@@ -70,7 +77,7 @@
     "publish:alpha": "npm run build && npm publish --tag alpha"
   },
   "dependencies": {
-    "@ast-grep/cli": "^0.25.7",
+    "@ast-grep/cli": "^0.39.5",
     "@babel/parser": "^7.28.0",
     "@babel/traverse": "^7.28.0",
     "@babel/types": "^7.28.2",
@@ -89,12 +96,12 @@
     "tree-sitter-typescript": "^0.21.2",
     "uuid": "^11.1.0",
     "voyageai": "^0.0.8",
-    "zod": "^3.23.8"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",
     "@types/express": "^5.0.3",
-    "@types/jest": "^29.5.14",
+    "@types/jest": "^30.0.0",
     "@types/node": "^18.19.0",
     "@types/sqlite3": "^3.1.8",
     "@typescript-eslint/eslint-plugin": "^8.40.0",
@@ -102,11 +109,11 @@
     "eslint": "^9.33.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.4",
-    "jest": "^29.7.0",
+    "jest": "^30.2.0",
     "minimatch": "^9.0.3",
     "prettier": "^3.6.2",
     "rimraf": "^6.0.1",
-    "ts-jest": "^29.4.1",
+    "ts-jest": "^29.4.4",
     "ts-node": "^10.9.2",
     "typescript": "^5.1.3"
   }

@@ -40,7 +40,7 @@ describe('Ambiance MCP API Integration', () => {
     mockServer = new MockApiServer({
       port: 3999,
       validKeys: ['valid-test-key'],
-      simulateErrors: false
+      simulateErrors: false,
     });
 
     await mockServer.start();
@@ -85,7 +85,7 @@ describe('Ambiance MCP API Integration', () => {
       const result = await client.generateEmbeddings({
         texts: ['test text'],
         input_type: 'document',
-        model: process.env.VOYAGEAI_MODEL || 'voyageai-model'
+        model: process.env.VOYAGEAI_MODEL || 'voyageai-model',
       });
 
       expect(result).toBeDefined();
@@ -108,7 +108,9 @@ describe('Ambiance MCP API Integration', () => {
 
       // The server should have logged successful validation
       expect(logger.info).toHaveBeenCalledWith('✅ Ambiance API key validation successful');
-      expect(logger.info).toHaveBeenCalledWith('✅ Ambiance API key validated - adding cloud storage and embedding tools');
+      expect(logger.info).toHaveBeenCalledWith(
+        '✅ Ambiance API key validated - adding cloud storage and embedding tools'
+      );
     });
 
     test('should handle invalid API key gracefully', async () => {
@@ -121,7 +123,9 @@ describe('Ambiance MCP API Integration', () => {
       await server.start();
 
       // The server should have logged validation failure
-      expect(logger.warn).toHaveBeenCalledWith('⚠️ Ambiance API key detected but validation failed - cloud tools disabled');
+      expect(logger.warn).toHaveBeenCalledWith(
+        '⚠️ Ambiance API key detected but validation failed - cloud tools disabled'
+      );
     });
 
     test('should work without API key (local mode)', async () => {
@@ -143,7 +147,7 @@ describe('Ambiance MCP API Integration', () => {
       const errorServer = new MockApiServer({
         port: 4000,
         validKeys: ['valid-test-key'],
-        simulateErrors: true
+        simulateErrors: true,
       });
 
       await errorServer.start();
@@ -155,7 +159,9 @@ describe('Ambiance MCP API Integration', () => {
       await server.start();
 
       // The server should handle the API error gracefully
-      expect(logger.warn).toHaveBeenCalledWith('⚠️ Ambiance API key detected but validation failed - cloud tools disabled');
+      expect(logger.warn).toHaveBeenCalledWith(
+        '⚠️ Ambiance API key detected but validation failed - cloud tools disabled'
+      );
 
       await errorServer.stop();
     });

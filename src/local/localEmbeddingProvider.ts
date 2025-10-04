@@ -17,7 +17,9 @@ async function initializeTransformers() {
       logger.warn('⚠️ @xenova/transformers not available, local embeddings disabled', {
         error: error instanceof Error ? error.message : String(error),
       });
-      throw new Error('Local embeddings not available: @xenova/transformers package could not be loaded');
+      throw new Error(
+        'Local embeddings not available: @xenova/transformers package could not be loaded'
+      );
     }
   }
   return transformersModule;
@@ -35,7 +37,6 @@ export interface LocalEmbeddingConfig {
     | 'multilingual-e5-large'
     | 'all-mpnet-base-v2'
     | 'advanced-neural-dense';
-    // Note: multilingual-e5-large-instruct is not available in Xenova Transformers
   maxLength?: number;
   normalize?: boolean;
   pooling?: 'mean' | 'cls';
@@ -110,8 +111,6 @@ export class LocalEmbeddingProvider {
     switch (model) {
       case 'advanced-neural-dense':
         return 'all-mpnet-base-v2'; // Advanced Neural Dense Retrieval model
-      case 'multilingual-e5-large-instruct':
-        return 'multilingual-e5-large-instruct'; // Instruction-tuned multilingual model
       default:
         return model;
     }
@@ -173,7 +172,9 @@ export class LocalEmbeddingProvider {
     logger.debug('🔍 Input validation for embeddings', {
       originalCount: texts.length,
       validCount: validTexts.length,
-      avgLength: Math.round(validTexts.reduce((sum, text) => sum + text.length, 0) / validTexts.length),
+      avgLength: Math.round(
+        validTexts.reduce((sum, text) => sum + text.length, 0) / validTexts.length
+      ),
       sampleText: validTexts[0]?.substring(0, 100) + (validTexts[0]?.length > 100 ? '...' : ''),
     });
 
@@ -199,48 +200,117 @@ export class LocalEmbeddingProvider {
           : text
       );
 
-      // Generate embeddings - handle multilingual-e5-large specially
+      // Generate embeddings - try batch processing first, fallback to individual
       let embeddings: any;
 
-      // Process texts individually to avoid batch processing issues
-      // This appears to be a fundamental limitation of the Transformers.js models
-      logger.info('🔄 Processing texts individually to avoid batch processing issues');
-      const individualResults = [];
+      // Try batch processing first for better performance
+      logger.debug('🔄 Attempting batch processing for better performance', {
+        textCount: truncatedTexts.length,
+        model: this.config.model,
+      });
 
-      for (const text of truncatedTexts) {
-        try {
-          const singleResult = await this.pipeline([text], {
-            pooling: this.config.pooling,
-            normalize: this.config.normalize,
-          });
+      try {
+        embeddings = await this.pipeline(truncatedTexts, {
+          pooling: this.config.pooling,
+          normalize: this.config.normalize,
+        });
 
-          if (Array.isArray(singleResult) && singleResult.length > 0) {
-            individualResults.push(singleResult[0]);
-          } else if (singleResult && typeof singleResult === 'object' && 'data' in singleResult) {
-            individualResults.push(singleResult);
-          } else {
-            logger.warn('⚠️ Unexpected single result format', {
-              resultType: typeof singleResult,
+        logger.debug('✅ Batch processing successful', {
+          inputCount: truncatedTexts.length,
+          outputType: typeof embeddings,
+          isArray: Array.isArray(embeddings),
+        });
+      } catch (batchError) {
+        logger.warn('⚠️ Batch processing failed, falling back to individual processing', {
+          error: batchError instanceof Error ? batchError.message : String(batchError),
+          model: this.config.model,
+          textCount: truncatedTexts.length,
+        });
+
+        // Fallback to individual processing
+        const individualResults = [];
+        for (let textIdx = 0; textIdx < truncatedTexts.length; textIdx++) {
+          const text = truncatedTexts[textIdx];
+          try {
+            const singleResult = await this.pipeline(text, {
+              pooling: this.config.pooling,
+              normalize: this.config.normalize,
+            });
+
+            // Validate the single result structure
+            if (!singleResult) {
+              logger.warn('⚠️ Null result from pipeline for individual text', {
+                textIndex: textIdx,
+                model: this.config.model,
+              });
+              continue;
+            }
+
+            // Check if result has the expected data property
+            if (singleResult && typeof singleResult === 'object' && 'data' in singleResult) {
+              // Validate dimensions before accepting
+              const embedding = Array.from(singleResult.data as Float32Array);
+              if (embedding.length !== this.getModelDimensions()) {
+                logger.warn('⚠️ Individual result has unexpected dimensions, rejecting', {
+                  expected: this.getModelDimensions(),
+                  actual: embedding.length,
+                  textIndex: textIdx,
+                  model: this.config.model,
+                });
+                continue;
+              }
+              individualResults.push(singleResult);
+            } else if (
+              Array.isArray(singleResult) &&
+              singleResult.length > 0 &&
+              typeof singleResult[0] === 'object' &&
+              'data' in singleResult[0]
+            ) {
+              // If wrapped in array, unwrap it
+              const embedding = Array.from(singleResult[0].data as Float32Array);
+              if (embedding.length !== this.getModelDimensions()) {
+                logger.warn('⚠️ Individual result has unexpected dimensions, rejecting', {
+                  expected: this.getModelDimensions(),
+                  actual: embedding.length,
+                  textIndex: textIdx,
+                  model: this.config.model,
+                });
+                continue;
+              }
+              individualResults.push(singleResult[0]);
+            } else {
+              logger.warn('⚠️ Unexpected single result format', {
+                resultType: typeof singleResult,
+                isArray: Array.isArray(singleResult),
+                hasData: singleResult && typeof singleResult === 'object' && 'data' in singleResult,
+                textIndex: textIdx,
+                model: this.config.model,
+              });
+              continue;
+            }
+          } catch (singleTextError) {
+            logger.warn('⚠️ Failed to process individual text', {
+              error:
+                singleTextError instanceof Error
+                  ? singleTextError.message
+                  : String(singleTextError),
+              textIndex: textIdx,
               model: this.config.model,
             });
-            // Skip this result rather than failing completely
             continue;
           }
-        } catch (singleTextError) {
-          logger.warn('⚠️ Failed to process individual text', {
-            error: singleTextError instanceof Error ? singleTextError.message : String(singleTextError),
-            model: this.config.model,
-          });
-          // Skip this result rather than failing completely
-          continue;
         }
-      }
 
-      if (individualResults.length === 0) {
-        throw new Error('No texts could be processed successfully');
-      }
+        if (individualResults.length === 0) {
+          throw new Error('No texts could be processed successfully');
+        }
 
-      embeddings = individualResults;
+        embeddings = individualResults;
+        logger.info('📝 Successfully processed texts individually as fallback', {
+          processedCount: individualResults.length,
+          inputCount: truncatedTexts.length,
+        });
+      }
 
       // For individual processing, we need to adjust the validation
       // since we're now processing texts individually, the result should have the right count
@@ -249,15 +319,18 @@ export class LocalEmbeddingProvider {
         isArray: Array.isArray(embeddings),
         length: Array.isArray(embeddings) ? embeddings.length : 'N/A',
         constructor: embeddings?.constructor?.name,
-        firstItem: Array.isArray(embeddings) && embeddings.length > 0 ? {
-          type: typeof embeddings[0],
-          keys: embeddings[0] ? Object.keys(embeddings[0]) : 'null/undefined',
-          hasData: embeddings[0] && 'data' in embeddings[0],
-          dataType: embeddings[0]?.data ? typeof embeddings[0].data : 'N/A',
-          dataLength: embeddings[0]?.data ? embeddings[0].data.length : 'N/A',
-          // Check if it's a tensor or other complex object
-          isTensor: embeddings[0]?.data?.constructor?.name,
-        } : 'no items',
+        firstItem:
+          Array.isArray(embeddings) && embeddings.length > 0
+            ? {
+                type: typeof embeddings[0],
+                keys: embeddings[0] ? Object.keys(embeddings[0]) : 'null/undefined',
+                hasData: embeddings[0] && 'data' in embeddings[0],
+                dataType: embeddings[0]?.data ? typeof embeddings[0].data : 'N/A',
+                dataLength: embeddings[0]?.data ? embeddings[0].data.length : 'N/A',
+                // Check if it's a tensor or other complex object
+                isTensor: embeddings[0]?.data?.constructor?.name,
+              }
+            : 'no items',
         truncatedTextsCount: truncatedTexts.length,
         model: this.config.model,
       });
@@ -271,11 +344,60 @@ export class LocalEmbeddingProvider {
           logger.debug('📝 Single embedding result detected, wrapping in array');
           embeddingArray = [embeddings];
         } else {
-          throw new Error(`Pipeline returned invalid embeddings: expected array or object with data, got ${typeof embeddings}`);
+          throw new Error(
+            `Pipeline returned invalid embeddings: expected array or object with data, got ${typeof embeddings}`
+          );
         }
       } else {
         // embeddings is already an array
         embeddingArray = embeddings;
+      }
+
+      // Detect and handle concatenated batch results
+      // When transformers.js processes a batch, it sometimes returns a single concatenated tensor
+      if (embeddingArray.length === 1 && embeddingArray[0]?.data) {
+        const dataLength = embeddingArray[0].data.length;
+        const expectedDim = this.getModelDimensions();
+        const inputCount = validTexts.length;
+
+        // Check if this looks like a concatenated result
+        if (dataLength === expectedDim * inputCount) {
+          logger.info('🔧 Detected concatenated batch result, splitting...', {
+            totalDimensions: dataLength,
+            perItemDimensions: expectedDim,
+            expectedCount: inputCount,
+            model: this.config.model,
+          });
+
+          // Split the concatenated tensor into individual embeddings
+          const splitResults = [];
+          const fullData = Array.from(embeddingArray[0].data as Float32Array);
+
+          for (let i = 0; i < inputCount; i++) {
+            const start = i * expectedDim;
+            const end = (i + 1) * expectedDim;
+            const embedding = fullData.slice(start, end);
+
+            splitResults.push({
+              data: new Float32Array(embedding),
+            });
+          }
+
+          embeddingArray = splitResults;
+          logger.info('✅ Successfully split concatenated result', {
+            originalCount: 1,
+            splitCount: splitResults.length,
+            model: this.config.model,
+          });
+        } else if (dataLength !== expectedDim) {
+          logger.warn(`⚠️ Result 0 has unexpected dimensions`, {
+            expected: expectedDim,
+            actual: dataLength,
+            inputCount,
+            possibleConcatenation: dataLength % expectedDim === 0,
+            model: this.config.model,
+          });
+        }
       }
 
       // Ensure each result has the expected format
@@ -340,7 +462,9 @@ export class LocalEmbeddingProvider {
             continue;
           }
 
-          throw new Error(`Invalid embedding result at index ${i}: missing data property and not a direct array`);
+          throw new Error(
+            `Invalid embedding result at index ${i}: missing data property and not a direct array`
+          );
         }
 
         const embedding = Array.from(embeddingArray[i].data as Float32Array);
@@ -368,7 +492,9 @@ export class LocalEmbeddingProvider {
         textCount: texts.length,
         error: error instanceof Error ? error.message : String(error),
       });
-      throw new Error(`Failed to generate embeddings: ${error}`);
+      throw new Error(
+        `Failed to generate embeddings: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 

@@ -7,19 +7,52 @@
 import { LocalEmbeddingStorage, EmbeddingChunk } from '../embeddingStorage';
 import { logger } from '../../utils/logger';
 
-// Mock sqlite3
+// Mock sqlite3 with proper async handling
 jest.mock('sqlite3', () => ({
-  Database: jest.fn().mockImplementation(() => ({
-    exec: jest.fn().mockImplementation((sql: string, callback: (error: Error | null) => void) => callback(null)),
-    prepare: jest.fn().mockReturnValue({
-      run: jest.fn().mockImplementation((params: any[], callback: (error: Error | null) => void) => callback(null)),
-      all: jest.fn().mockImplementation((params: any[], callback: (error: Error | null, rows: any[]) => void) => callback(null, [])),
-      get: jest.fn().mockImplementation((params: any[], callback: (error: Error | null, row: any) => void) => callback(null, null)),
-      finalize: jest.fn(),
+  Database: jest
+    .fn()
+    .mockImplementation((dbPath: string, callback: (err: Error | null) => void) => {
+      // Simulate async database opening
+      setTimeout(() => callback(null), 1);
+
+      return {
+        exec: jest
+          .fn()
+          .mockImplementation((sql: string, callback: (error: Error | null) => void) => {
+            // Simulate async execution
+            setTimeout(() => callback(null), 1);
+          }),
+        prepare: jest.fn().mockReturnValue({
+          run: jest
+            .fn()
+            .mockImplementation((params: any[], callback: (error: Error | null) => void) => {
+              setTimeout(() => callback(null), 1);
+            }),
+          all: jest
+            .fn()
+            .mockImplementation(
+              (params: any[], callback: (error: Error | null, rows: any[]) => void) => {
+                setTimeout(() => callback(null, []), 1);
+              }
+            ),
+          get: jest
+            .fn()
+            .mockImplementation(
+              (params: any[], callback: (error: Error | null, row: any) => void) => {
+                setTimeout(() => callback(null, null), 1);
+              }
+            ),
+          finalize: jest.fn(),
+        }),
+        serialize: jest.fn().mockImplementation((fn: () => void) => {
+          // Execute synchronously for testing
+          fn();
+        }),
+        close: jest.fn().mockImplementation((callback: (error: Error | null) => void) => {
+          setTimeout(() => callback(null), 1);
+        }),
+      };
     }),
-    serialize: jest.fn().mockImplementation((fn: () => void) => fn()),
-    close: jest.fn().mockImplementation((callback: (error: Error | null) => void) => callback(null)),
-  })),
 }));
 
 // Mock fs
@@ -31,7 +64,7 @@ jest.mock('fs', () => ({
 // Mock path
 jest.mock('path', () => ({
   resolve: jest.fn((...args) => args.join('/')),
-  dirname: jest.fn((path) => path.split('/').slice(0, -1).join('/')),
+  dirname: jest.fn(path => path.split('/').slice(0, -1).join('/')),
   join: jest.fn((...args) => args.join('/')),
 }));
 
@@ -151,28 +184,33 @@ describe('LocalEmbeddingStorage', () => {
 
     test('should store embedding with all metadata', async () => {
       const mockStmt = mockDb.prepare.mock.results[0].value;
-      mockStmt.run.mockImplementation((params: any, callback: (error: Error | null) => void) => callback(null));
+      mockStmt.run.mockImplementation((params: any, callback: (error: Error | null) => void) =>
+        callback(null)
+      );
 
       await storage.storeEmbedding(mockEmbeddingChunk);
 
-      expect(mockStmt.run).toHaveBeenCalledWith([
-        mockEmbeddingChunk.id,
-        mockEmbeddingChunk.projectId,
-        mockEmbeddingChunk.fileId,
-        mockEmbeddingChunk.filePath,
-        mockEmbeddingChunk.chunkIndex,
-        mockEmbeddingChunk.content,
-        Buffer.from(JSON.stringify(mockEmbeddingChunk.embedding)),
-        mockEmbeddingChunk.metadata.type,
-        mockEmbeddingChunk.metadata.language,
-        JSON.stringify(mockEmbeddingChunk.metadata.symbols),
-        mockEmbeddingChunk.metadata.startLine,
-        mockEmbeddingChunk.metadata.endLine,
-        mockEmbeddingChunk.metadata.embeddingFormat,
-        mockEmbeddingChunk.metadata.embeddingDimensions,
-        mockEmbeddingChunk.metadata.embeddingProvider,
-        mockEmbeddingChunk.hash,
-      ], expect.any(Function));
+      expect(mockStmt.run).toHaveBeenCalledWith(
+        [
+          mockEmbeddingChunk.id,
+          mockEmbeddingChunk.projectId,
+          mockEmbeddingChunk.fileId,
+          mockEmbeddingChunk.filePath,
+          mockEmbeddingChunk.chunkIndex,
+          mockEmbeddingChunk.content,
+          Buffer.from(JSON.stringify(mockEmbeddingChunk.embedding)),
+          mockEmbeddingChunk.metadata.type,
+          mockEmbeddingChunk.metadata.language,
+          JSON.stringify(mockEmbeddingChunk.metadata.symbols),
+          mockEmbeddingChunk.metadata.startLine,
+          mockEmbeddingChunk.metadata.endLine,
+          mockEmbeddingChunk.metadata.embeddingFormat,
+          mockEmbeddingChunk.metadata.embeddingDimensions,
+          mockEmbeddingChunk.metadata.embeddingProvider,
+          mockEmbeddingChunk.hash,
+        ],
+        expect.any(Function)
+      );
 
       expect(logger.debug).toHaveBeenCalledWith(
         '✅ Embedding stored',
@@ -195,7 +233,9 @@ describe('LocalEmbeddingStorage', () => {
       };
 
       const mockStmt = mockDb.prepare.mock.results[0].value;
-      mockStmt.run.mockImplementation((params: any, callback: (error: Error | null) => void) => callback(null));
+      mockStmt.run.mockImplementation((params: any, callback: (error: Error | null) => void) =>
+        callback(null)
+      );
 
       await storage.storeEmbedding(chunkWithoutMetadata);
 
@@ -234,12 +274,13 @@ describe('LocalEmbeddingStorage', () => {
         },
       ];
 
-      const mockStmt = mockDb.prepare.mock.results.find(
-        (result: any) => result.value.all
-      )?.value;
+      const mockStmt = mockDb.prepare.mock.results.find((result: any) => result.value.all)?.value;
 
       if (mockStmt) {
-        mockStmt.all.mockImplementation((params: any, callback: (error: Error | null, rows: any[]) => void) => callback(null, mockRows));
+        mockStmt.all.mockImplementation(
+          (params: any, callback: (error: Error | null, rows: any[]) => void) =>
+            callback(null, mockRows)
+        );
       }
 
       const embeddings = await storage.getProjectEmbeddings('test-project');
@@ -291,12 +332,13 @@ describe('LocalEmbeddingStorage', () => {
         },
       ];
 
-      const mockStmt = mockDb.prepare.mock.results.find(
-        (result: any) => result.value.all
-      )?.value;
+      const mockStmt = mockDb.prepare.mock.results.find((result: any) => result.value.all)?.value;
 
       if (mockStmt) {
-        mockStmt.all.mockImplementation((params: any, callback: (error: Error | null, rows: any[]) => void) => callback(null, mockRows));
+        mockStmt.all.mockImplementation(
+          (params: any, callback: (error: Error | null, rows: any[]) => void) =>
+            callback(null, mockRows)
+        );
       }
 
       const embeddings = await storage.getProjectEmbeddings('test-project');
@@ -393,7 +435,9 @@ describe('LocalEmbeddingStorage', () => {
 
   describe('Error Handling', () => {
     test('should handle database initialization errors', async () => {
-      mockDb.exec.mockImplementation((sql: string, callback: (error: Error | null) => void) => callback(new Error('DB Error')));
+      mockDb.exec.mockImplementation((sql: string, callback: (error: Error | null) => void) =>
+        callback(new Error('DB Error'))
+      );
 
       await expect(storage.initializeDatabase()).rejects.toThrow('DB Error');
     });
@@ -402,7 +446,9 @@ describe('LocalEmbeddingStorage', () => {
       await storage.initializeDatabase();
 
       const mockStmt = mockDb.prepare.mock.results[0].value;
-      mockStmt.run.mockImplementation((params: any[], callback: (error: Error | null) => void) => callback(new Error('Storage Error')));
+      mockStmt.run.mockImplementation((params: any[], callback: (error: Error | null) => void) =>
+        callback(new Error('Storage Error'))
+      );
 
       await expect(storage.storeEmbedding(mockEmbeddingChunk)).rejects.toThrow('Storage Error');
     });
@@ -410,12 +456,13 @@ describe('LocalEmbeddingStorage', () => {
     test('should handle retrieval errors', async () => {
       await storage.initializeDatabase();
 
-      const mockStmt = mockDb.prepare.mock.results.find(
-        (result: any) => result.value.all
-      )?.value;
+      const mockStmt = mockDb.prepare.mock.results.find((result: any) => result.value.all)?.value;
 
       if (mockStmt) {
-        mockStmt.all.mockImplementation((params: any[], callback: (error: Error | null, rows: any[]) => void) => callback(new Error('Retrieval Error'), []));
+        mockStmt.all.mockImplementation(
+          (params: any[], callback: (error: Error | null, rows: any[]) => void) =>
+            callback(new Error('Retrieval Error'), [])
+        );
       }
 
       await expect(storage.getProjectEmbeddings('test-project')).rejects.toThrow('Retrieval Error');
@@ -431,7 +478,9 @@ describe('LocalEmbeddingStorage', () => {
     });
 
     test('should handle close errors gracefully', async () => {
-      mockDb.close.mockImplementation((callback: (error: Error | null) => void) => callback(new Error('Close Error')));
+      mockDb.close.mockImplementation((callback: (error: Error | null) => void) =>
+        callback(new Error('Close Error'))
+      );
 
       // Should not throw
       await expect(storage.close()).resolves.toBeUndefined();

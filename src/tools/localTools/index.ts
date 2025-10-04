@@ -11,7 +11,6 @@
 import { localSemanticCompactTool, handleSemanticCompact } from './semanticCompact';
 import { localProjectHintsTool, handleProjectHints } from './projectHints';
 import { localFileSummaryTool, handleFileSummary } from './fileSummary';
-import { workspaceConfigTool, handleWorkspaceConfig } from './workspaceConfig';
 import { frontendInsightsTool, handleFrontendInsights } from './frontendInsights';
 import { localDebugContextTool, handleLocalDebugContext } from '../debug';
 import {
@@ -19,7 +18,7 @@ import {
   handleManageEmbeddings,
   getEmbeddingStatus,
   runEmbeddingHealthCheck,
-  migrateProjectEmbeddings,
+  createProjectEmbeddings,
   validateProjectEmbeddings,
 } from './embeddingManagement';
 import { astGrepTool, handleAstGrep } from './astGrep';
@@ -33,7 +32,6 @@ import {
 export { localSemanticCompactTool, handleSemanticCompact } from './semanticCompact';
 export { localProjectHintsTool, handleProjectHints } from './projectHints';
 export { localFileSummaryTool, handleFileSummary } from './fileSummary';
-export { workspaceConfigTool, handleWorkspaceConfig } from './workspaceConfig';
 export { frontendInsightsTool, handleFrontendInsights } from './frontendInsights';
 export { localDebugContextTool, handleLocalDebugContext } from '../debug';
 export {
@@ -41,7 +39,7 @@ export {
   handleManageEmbeddings,
   getEmbeddingStatus,
   runEmbeddingHealthCheck,
-  migrateProjectEmbeddings,
+  createProjectEmbeddings,
   validateProjectEmbeddings,
 } from './embeddingManagement';
 export { astGrepTool, handleAstGrep } from './astGrep';
@@ -50,6 +48,11 @@ export {
   deleteProjectEmbeddings,
   getProjectEmbeddingDetails,
 } from './projectManagement';
+
+// DEPRECATED: workspace_config tool has been merged into manage_embeddings
+// Use manage_embeddings with actions: get_workspace, set_workspace, validate_workspace
+// Kept for backward compatibility only
+export { workspaceConfigTool, handleWorkspaceConfig } from './workspaceConfig';
 
 // Path utilities
 export {
@@ -75,7 +78,6 @@ export {
   formatFileSummaryAsCompact,
   classifySymbolPurpose,
   formatFunctionDefinitions,
-  buildReturnInfo,
   generateQuickFileAnalysis,
 } from './formatters/fileSummaryFormatters';
 
@@ -118,7 +120,6 @@ export const localTools = [
   ...(allowLocalContext ? [localSemanticCompactTool] : []),
   localProjectHintsTool,
   localFileSummaryTool,
-  workspaceConfigTool,
   frontendInsightsTool,
   localDebugContextTool,
   manageEmbeddingsTool,
@@ -129,7 +130,6 @@ export const localHandlers = {
   ...(allowLocalContext ? { local_context: handleSemanticCompact } : {}),
   local_project_hints: handleProjectHints,
   local_file_summary: handleFileSummary,
-  workspace_config: handleWorkspaceConfig,
   frontend_insights: handleFrontendInsights,
   local_debug_context: handleLocalDebugContext,
   manage_embeddings: handleManageEmbeddings,
@@ -144,7 +144,6 @@ export const lightweightHandlers = localHandlers;
 export * from './semanticCompact';
 export * from './projectHints';
 export * from './fileSummary';
-export * from './workspaceConfig';
 export * from '../debug';
 export * from '../utils/pathUtils';
 export * from '../utils/workspaceValidator';
@@ -155,3 +154,7 @@ export * from './analyzers/complexityAnalysis';
 export * from './analyzers/fileAnalyzers';
 export * from './analyzers/astAnalysis';
 export * from './astGrep';
+
+// DEPRECATED: Re-export workspace_config for backward compatibility
+// New code should use manage_embeddings with workspace actions
+export * from './workspaceConfig';

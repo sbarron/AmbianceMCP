@@ -20,7 +20,12 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { OpenAI } from 'openai';
 import { logger } from '../utils/logger';
-import { LocalEmbeddingStorage, EmbeddingChunk, FileMetadata } from './embeddingStorage';
+import {
+  LocalEmbeddingStorage,
+  EmbeddingChunk,
+  FileMetadata,
+  ProjectMetadata,
+} from './embeddingStorage';
 import { TreeSitterProcessor } from './treeSitterProcessor';
 import { openaiService } from '../core/openaiService';
 import { apiClient } from '../client/apiClient';
@@ -29,6 +34,7 @@ import {
   getDefaultLocalProvider,
   EmbeddingResult,
 } from './localEmbeddingProvider';
+import { ProjectIdentifier } from './projectIdentifier';
 
 /**
  * Simple semaphore implementation for concurrency control
@@ -298,6 +304,33 @@ export class LocalEmbeddingGenerator {
 
     await this.storage.initializeDatabase();
 
+    // Register project in database (ensures project metadata is stored)
+    try {
+      const projectIdentifier = ProjectIdentifier.getInstance();
+      const projectInfo = await projectIdentifier.identifyProject(projectPath);
+
+      const projectMetadata: ProjectMetadata = {
+        id: projectId,
+        name: projectInfo.name,
+        path: projectInfo.path,
+        type: projectInfo.type,
+        gitRemoteUrl: projectInfo.gitInfo?.remoteUrl,
+        gitBranch: projectInfo.gitInfo?.branch,
+        gitCommitSha: projectInfo.gitInfo?.commitSha,
+        workspaceRoot: projectInfo.workspaceRoot,
+        addedAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      await this.storage.registerProject(projectMetadata);
+      logger.info('📝 Project registered in database', { projectId, name: projectInfo.name });
+    } catch (error) {
+      logger.warn('⚠️ Failed to register project (continuing anyway)', {
+        error: error instanceof Error ? error.message : String(error),
+        projectId,
+      });
+    }
+
     // Check for model changes and handle migration
     await this.handleModelChangeDetection(projectId, options);
 
@@ -332,10 +365,10 @@ export class LocalEmbeddingGenerator {
       progress.totalFiles = files.length;
 
       const batchSize =
-        options.batchSize || parseInt(process.env.EMBEDDING_BATCH_SIZE || '', 10) || 32;
-      const parallelMode = options.parallelMode || process.env.EMBEDDING_PARALLEL_MODE === 'true';
+        options.batchSize || parseInt(process.env.EMBEDDING_BATCH_SIZE || '', 10) || 64;
+      const parallelMode = options.parallelMode ?? process.env.EMBEDDING_PARALLEL_MODE !== 'false';
       const maxConcurrency =
-        options.maxConcurrency || parseInt(process.env.EMBEDDING_MAX_CONCURRENCY || '', 10) || 10;
+        options.maxConcurrency || parseInt(process.env.EMBEDDING_MAX_CONCURRENCY || '', 10) || 6;
 
       logger.info('🚀 Starting embedding generation', {
         projectId,
@@ -350,57 +383,45 @@ export class LocalEmbeddingGenerator {
         },
       });
 
+      // Use semaphore for file-level parallelism when parallel mode is enabled
+      const fileConcurrency = parallelMode
+        ? Math.min(4, Math.max(1, Math.floor(maxConcurrency / 2)))
+        : 1;
+      const fileSemaphore = new Semaphore(fileConcurrency);
+
+      logger.info('📁 Starting file processing', {
+        totalFiles: files.length,
+        fileConcurrency,
+        mode: parallelMode ? 'parallel' : 'sequential',
+      });
+
       for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
         const filePath = files[fileIdx];
-        try {
-          progress.currentFile = path.relative(projectPath, filePath);
-          logger.info('Processing file', {
-            file: progress.currentFile,
-            index: fileIdx + 1,
-            remaining: files.length - fileIdx - 1,
-            total: files.length,
-          });
 
-          // Check if we should skip this file (unless forced)
-          if (!options.force && (await this.shouldSkipFile(projectId, filePath))) {
-            logger.debug('⏭️ Skipping unchanged file', { file: progress.currentFile });
-            progress.processedFiles++;
-            continue;
-          }
+        // Acquire semaphore for parallel processing
+        await fileSemaphore.acquire();
 
-          const fileProgress = await this.generateFileEmbeddings(
-            projectId,
-            filePath,
-            projectPath,
-            options
-          );
-
-          progress.processedChunks += fileProgress.processedChunks;
-          progress.totalChunks += fileProgress.totalChunks;
-          progress.embeddings += fileProgress.embeddings;
-          progress.errors.push(...fileProgress.errors);
-          progress.processedFiles++;
-
-          logger.info('📄 File processed', {
-            file: progress.currentFile,
-            chunks: fileProgress.totalChunks,
-            embeddings: fileProgress.embeddings,
-            progress: `${progress.processedFiles}/${progress.totalFiles}`,
-          });
-
-          // Rate limiting between files
-          if (options.rateLimit && options.rateLimit > 0) {
-            await this.delay(options.rateLimit);
-          }
-        } catch (error) {
-          const errorMsg = `Failed to process ${filePath}: ${error instanceof Error ? error.message : String(error)}`;
-          progress.errors.push(errorMsg);
-          logger.error('❌ File processing failed', {
+        // Process file asynchronously
+        this.processFileAsync(
+          projectId,
+          filePath,
+          projectPath,
+          options,
+          progress,
+          fileIdx,
+          files.length,
+          fileSemaphore
+        ).catch(error => {
+          logger.error('❌ Async file processing failed', {
             file: filePath,
-            error: errorMsg,
+            error: error instanceof Error ? error.message : String(error),
           });
-          progress.processedFiles++;
-        }
+        });
+      }
+
+      // Wait for all files to complete
+      while (progress.processedFiles < files.length) {
+        await this.delay(100); // Small delay to avoid busy waiting
       }
 
       logger.info('✅ Local embedding generation completed', {
@@ -413,6 +434,19 @@ export class LocalEmbeddingGenerator {
 
       // Cloud upload disabled by policy: do not upload local embeddings
       logger.info('☑️ Skipping cloud embedding upload (disabled by policy)');
+
+      // Update project's last indexed timestamp on successful completion
+      if (progress.errors.length === 0 || progress.processedFiles > 0) {
+        try {
+          await this.storage.updateProjectLastIndexed(projectId);
+          logger.info('✅ Updated project last indexed timestamp', { projectId });
+        } catch (updateError) {
+          logger.warn('⚠️ Failed to update project last indexed timestamp', {
+            error: updateError instanceof Error ? updateError.message : String(updateError),
+            projectId,
+          });
+        }
+      }
     } catch (error) {
       const errorMsg = `Project embedding generation failed: ${error instanceof Error ? error.message : String(error)}`;
       progress.errors.push(errorMsg);
@@ -420,6 +454,74 @@ export class LocalEmbeddingGenerator {
     }
 
     return progress;
+  }
+
+  /**
+   * Process a single file asynchronously with semaphore management
+   */
+  private async processFileAsync(
+    projectId: string,
+    filePath: string,
+    projectPath: string,
+    options: GenerationOptions,
+    progress: GenerationProgress,
+    fileIdx: number,
+    totalFiles: number,
+    semaphore: Semaphore
+  ): Promise<void> {
+    try {
+      const relativePath = path.relative(projectPath, filePath);
+      logger.info('Processing file', {
+        file: relativePath,
+        index: fileIdx + 1,
+        remaining: totalFiles - fileIdx - 1,
+        total: totalFiles,
+      });
+
+      // Check if we should skip this file (unless forced)
+      if (!options.force && (await this.shouldSkipFile(projectId, filePath))) {
+        logger.debug('⏭️ Skipping unchanged file', { file: relativePath });
+        progress.processedFiles++;
+        semaphore.release();
+        return;
+      }
+
+      const fileProgress = await this.generateFileEmbeddings(
+        projectId,
+        filePath,
+        projectPath,
+        options
+      );
+
+      // Update progress atomically
+      progress.processedChunks += fileProgress.processedChunks;
+      progress.totalChunks += fileProgress.totalChunks;
+      progress.embeddings += fileProgress.embeddings;
+      progress.errors.push(...fileProgress.errors);
+      progress.processedFiles++;
+
+      logger.info('📄 File processed', {
+        file: relativePath,
+        chunks: fileProgress.totalChunks,
+        embeddings: fileProgress.embeddings,
+        progress: `${progress.processedFiles}/${progress.totalFiles}`,
+      });
+
+      // Rate limiting between files (only if not parallel)
+      if (options.rateLimit && options.rateLimit > 0 && !options.parallelMode) {
+        await this.delay(options.rateLimit);
+      }
+    } catch (error) {
+      const errorMsg = `Failed to process ${filePath}: ${error instanceof Error ? error.message : String(error)}`;
+      progress.errors.push(errorMsg);
+      logger.error('❌ File processing failed', {
+        file: filePath,
+        error: errorMsg,
+      });
+      progress.processedFiles++;
+    } finally {
+      semaphore.release();
+    }
   }
 
   /**
@@ -469,7 +571,8 @@ export class LocalEmbeddingGenerator {
           startLine: chunk.startLine,
           endLine: chunk.endLine,
           contentLength: chunk.content.length,
-          contentPreview: chunk.content.substring(0, 100) + (chunk.content.length > 100 ? '...' : ''),
+          contentPreview:
+            chunk.content.substring(0, 100) + (chunk.content.length > 100 ? '...' : ''),
           type: chunk.type,
           symbols: chunk.symbols,
         })),
@@ -487,13 +590,21 @@ export class LocalEmbeddingGenerator {
 
     // Generate embeddings in batches
     const batchSize =
-      options.batchSize || parseInt(process.env.EMBEDDING_BATCH_SIZE || '', 10) || 32;
+      options.batchSize || parseInt(process.env.EMBEDDING_BATCH_SIZE || '', 10) || 64;
 
     // Create batches
     const batches: string[][] = [];
     for (let i = 0; i < chunks.length; i += batchSize) {
       const batch = chunks.slice(i, i + batchSize);
-      batches.push(batch.map(chunk => chunk.content));
+      const batchContents = batch
+        .map(chunk => chunk.content)
+        .filter(
+          content => content !== undefined && content !== null && typeof content === 'string'
+        );
+
+      if (batchContents.length > 0) {
+        batches.push(batchContents);
+      }
     }
 
     try {
@@ -503,7 +614,9 @@ export class LocalEmbeddingGenerator {
           filePath,
           batchCount: batches.length,
           batchSizes: batches.map(batch => batch.length),
-          batchPreviews: batches.map(batch => batch.map(text => text.substring(0, 50) + (text.length > 50 ? '...' : ''))),
+          batchPreviews: batches.map(batch =>
+            batch.map(text => text.substring(0, 50) + (text.length > 50 ? '...' : ''))
+          ),
           options: {
             parallelMode: options.parallelMode,
             maxConcurrency: options.maxConcurrency,
@@ -526,19 +639,19 @@ export class LocalEmbeddingGenerator {
           const embedding = batchEmbeddings[j];
 
           // Debug embedding results for Python files
-        if (language === 'python') {
-          logger.debug('🐍 Python file embedding result', {
-            filePath,
-            chunkIndex: chunk.index,
-            embeddingLength: embedding.length,
-            embeddingType: typeof embedding,
-            embeddingSample: embedding.slice(0, 5),
-            currentProvider: this.getCurrentProvider(),
-            embeddingMetadata: this.getEmbeddingMetadata(this.getCurrentProvider(), embedding),
-          });
-        }
+          if (language === 'python') {
+            logger.debug('🐍 Python file embedding result', {
+              filePath,
+              chunkIndex: chunk.index,
+              embeddingLength: embedding.length,
+              embeddingType: typeof embedding,
+              embeddingSample: embedding.slice(0, 5),
+              currentProvider: this.getCurrentProvider(),
+              embeddingMetadata: this.getEmbeddingMetadata(this.getCurrentProvider(), embedding),
+            });
+          }
 
-        // Determine embedding metadata based on current provider
+          // Determine embedding metadata based on current provider
           const currentProvider = this.getCurrentProvider();
           const embeddingMetadata = this.getEmbeddingMetadata(currentProvider, embedding);
 
@@ -605,7 +718,7 @@ export class LocalEmbeddingGenerator {
   ): Promise<number[][][]> {
     const parallelMode = options.parallelMode || process.env.EMBEDDING_PARALLEL_MODE === 'true';
     let maxConcurrency =
-      options.maxConcurrency || parseInt(process.env.EMBEDDING_MAX_CONCURRENCY || '', 10) || 10;
+      options.maxConcurrency || parseInt(process.env.EMBEDDING_MAX_CONCURRENCY || '', 10) || 6;
 
     // Adjust concurrency based on rate limit history
     const currentProvider = this.getCurrentProvider();
@@ -659,12 +772,16 @@ export class LocalEmbeddingGenerator {
 
       const firstItem = response.data[0];
       if (!firstItem || !firstItem.embedding || !Array.isArray(firstItem.embedding)) {
-        throw new Error('Invalid OpenAI response: first item missing embedding or embedding is not an array');
+        throw new Error(
+          'Invalid OpenAI response: first item missing embedding or embedding is not an array'
+        );
       }
 
       return response.data.map((item: any) => {
         if (!item || !item.embedding || !Array.isArray(item.embedding)) {
-          throw new Error('Invalid OpenAI response: item missing embedding or embedding is not an array');
+          throw new Error(
+            'Invalid OpenAI response: item missing embedding or embedding is not an array'
+          );
         }
         return item.embedding;
       });
@@ -814,14 +931,15 @@ export class LocalEmbeddingGenerator {
   private async generateBatchEmbeddings(texts: string[]): Promise<number[][]> {
     // Validate and filter input texts
     const validTexts = texts.filter(text => {
+      if (text === undefined || text === null) {
+        logger.warn('⚠️ Skipping undefined/null text input');
+        return false;
+      }
       if (typeof text !== 'string') {
         logger.warn('⚠️ Skipping non-string text input', { type: typeof text });
         return false;
       }
-      if (text.trim().length === 0) {
-        logger.warn('⚠️ Skipping empty text input');
-        return false;
-      }
+      // Allow empty strings - let the provider handle them
       return true;
     });
 
@@ -1052,7 +1170,7 @@ export class LocalEmbeddingGenerator {
               currentProvider,
               currentDimensions,
               recommendation:
-                'Consider running manage_embeddings {"action": "migrate"} to update to the current model if desired',
+                'Consider running manage_embeddings {"action": "create"} to update to the current model if desired',
             });
 
             // Try to temporarily switch to stored model for this query
@@ -1071,7 +1189,7 @@ export class LocalEmbeddingGenerator {
                   error: modelAccessError.message,
                   fallbackProvider: currentProvider,
                   suggestion:
-                    'Consider regenerating embeddings with: manage_embeddings {"action": "migrate", "projectPath": "your_path", "force": true}',
+                    'Consider regenerating embeddings with: manage_embeddings {"action": "create", "projectPath": "your_path", "force": true}',
                 }
               );
             }
@@ -1165,6 +1283,15 @@ export class LocalEmbeddingGenerator {
 
     for (let i = 0; i < astChunks.length; i++) {
       const astChunk = astChunks[i];
+
+      // Skip chunks with invalid or undefined content
+      if (!astChunk || !astChunk.content || typeof astChunk.content !== 'string') {
+        logger.warn('Skipping chunk with invalid content', {
+          index: i,
+          hasContent: !!astChunk?.content,
+        });
+        continue;
+      }
 
       if (astChunk.content.length <= maxChunkSize) {
         chunks.push({
@@ -1282,7 +1409,7 @@ export class LocalEmbeddingGenerator {
     // Update cache
     this.providerCache = {
       provider,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
 
     return provider;
@@ -1322,7 +1449,11 @@ export class LocalEmbeddingGenerator {
    * Get the current embedding model name for the local provider
    */
   private getCurrentEmbeddingModel(): string {
-    return this.localProvider?.getModelInfo().name || process.env.LOCAL_EMBEDDING_MODEL || 'all-MiniLM-L6-v2';
+    return (
+      this.localProvider?.getModelInfo().name ||
+      process.env.LOCAL_EMBEDDING_MODEL ||
+      'all-MiniLM-L6-v2'
+    );
   }
 
   public getCurrentDimensions(): number {
@@ -1435,23 +1566,39 @@ export class LocalEmbeddingGenerator {
     const langMap: Record<string, string> = {
       '.js': 'javascript',
       '.jsx': 'javascript',
+      '.mjs': 'javascript',
+      '.cjs': 'javascript',
       '.ts': 'typescript',
       '.tsx': 'typescript',
+      '.mts': 'typescript',
+      '.cts': 'typescript',
       '.py': 'python',
       '.go': 'go',
       '.rs': 'rust',
       '.java': 'java',
       '.c': 'c',
       '.cpp': 'cpp',
+      '.cc': 'cpp',
+      '.cxx': 'cpp',
       '.h': 'c',
       '.hpp': 'cpp',
+      '.hh': 'cpp',
+      '.hxx': 'cpp',
       '.cs': 'csharp',
       '.php': 'php',
       '.rb': 'ruby',
       '.swift': 'swift',
       '.kt': 'kotlin',
+      '.kts': 'kotlin',
       '.scala': 'scala',
       '.sh': 'bash',
+      '.bash': 'bash',
+      '.zsh': 'bash',
+      '.ex': 'elixir',
+      '.exs': 'elixir',
+      '.hs': 'haskell',
+      '.lhs': 'haskell',
+      '.lua': 'lua',
       '.md': 'markdown',
       '.json': 'json',
       '.yaml': 'yaml',
@@ -1480,7 +1627,7 @@ export class LocalEmbeddingGenerator {
     const { globby } = await import('globby');
 
     const defaultPatterns = [
-      '**/*.{js,jsx,ts,tsx,py,go,rs,java,c,cpp,h,hpp,cs,php,rb,swift,kt,scala,sh}',
+      '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,py,go,rs,java,c,cpp,cc,cxx,h,hpp,hh,hxx,cs,php,rb,swift,kt,kts,scala,sh,bash,zsh,ex,exs,hs,lhs,lua}',
       '**/*.{md,json,yaml,yml,xml,html,css,sql}',
       '!node_modules/**',
       '!dist/**',
@@ -1549,8 +1696,24 @@ export class LocalEmbeddingGenerator {
    */
   async dispose(): Promise<void> {
     if (this.localProvider) {
-      await this.localProvider.dispose();
+      try {
+        await this.localProvider.dispose();
+      } catch (error) {
+        logger.warn('⚠️ Error disposing local provider', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       this.localProvider = null;
+    }
+    if (this.storage) {
+      try {
+        await this.storage.close();
+      } catch (error) {
+        logger.error('❌ Error closing storage', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        // Don't re-throw storage errors - dispose should be graceful
+      }
     }
     if (this.treeSitter) {
       // TreeSitterProcessor doesn't need disposal
@@ -1589,8 +1752,8 @@ export class LocalEmbeddingGenerator {
         });
 
         if (changeResult.migrationRecommended) {
-          // Always auto-migrate when model/provider changes - no user intervention needed
-          logger.info('🚀 Starting automatic embedding migration due to model change', {
+          // Always auto-create when model/provider changes - no user intervention needed
+          logger.info('🚀 Starting automatic embedding creation due to model change', {
             projectId,
             reason: 'Provider or model dimensions changed',
             oldProvider: changeResult.previousModel?.currentProvider,
@@ -1601,7 +1764,7 @@ export class LocalEmbeddingGenerator {
 
           await this.storage.clearProjectEmbeddings(projectId);
 
-          logger.info('✅ Automatic migration completed - incompatible embeddings cleared', {
+          logger.info('✅ Automatic creation completed - incompatible embeddings cleared', {
             projectId,
             clearedReason: 'Model/provider change detected',
           });
@@ -1655,7 +1818,8 @@ export class LocalEmbeddingGenerator {
     if (!storageEnabled) return false;
 
     // Check if any provider is explicitly enabled and available
-    const openaiEnabled = process.env.OPENAI_API_KEY && process.env.USE_OPENAI_EMBEDDINGS === 'true';
+    const openaiEnabled =
+      process.env.OPENAI_API_KEY && process.env.USE_OPENAI_EMBEDDINGS === 'true';
     const voyageAIEnabled = false; // VoyageAI is no longer supported
 
     const openaiReady = openaiEnabled && openaiService.isReady();

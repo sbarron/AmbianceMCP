@@ -19,29 +19,31 @@ import {
   getProjectEmbeddingDetails,
 } from './projectManagement';
 import * as crypto from 'crypto';
-import {
-  isQuantized,
-  dequantizeInt8ToFloat32,
-  QuantizedEmbedding,
-} from '../../local/quantization';
+import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding } from '../../local/quantization';
 
 export type ManageEmbeddingsAction =
   | 'status'
   | 'health_check'
-  | 'migrate'
+  | 'create'
   | 'validate'
   | 'list_projects'
   | 'delete_project'
-  | 'project_details';
+  | 'project_details'
+  | 'get_workspace'
+  | 'set_workspace'
+  | 'validate_workspace';
 
 const SUPPORTED_ACTIONS: readonly ManageEmbeddingsAction[] = [
   'status',
   'health_check',
-  'migrate',
+  'create',
   'validate',
   'list_projects',
   'delete_project',
   'project_details',
+  'get_workspace',
+  'set_workspace',
+  'validate_workspace',
 ];
 
 export interface ManageEmbeddingsRequest {
@@ -56,6 +58,48 @@ export interface ManageEmbeddingsRequest {
   includeStats?: boolean;
   checkIntegrity?: boolean;
   confirmDeletion?: boolean;
+  // Workspace configuration options
+  maxFiles?: number;
+  excludePatterns?: string[];
+  allowHiddenFolders?: boolean;
+  autoGenerate?: boolean;
+}
+
+/**
+ * Estimate embedding generation time based on project characteristics
+ */
+function estimateEmbeddingTime(fileCount: number, avgFileSize: number = 5000): string {
+  // Based on empirical data: ~200-500 files per minute depending on size and hardware
+  // Rough estimates:
+  // - Small files (< 1KB): ~1000 files/minute
+  // - Medium files (1-10KB): ~500 files/minute
+  // - Large files (> 10KB): ~200 files/minute
+
+  let filesPerMinute = 500; // Default assumption
+
+  if (avgFileSize < 1000) {
+    filesPerMinute = 1000;
+  } else if (avgFileSize < 10000) {
+    filesPerMinute = 500;
+  } else {
+    filesPerMinute = 200;
+  }
+
+  const estimatedMinutes = Math.ceil(fileCount / filesPerMinute);
+
+  if (estimatedMinutes < 1) {
+    return '< 1 minute';
+  } else if (estimatedMinutes === 1) {
+    return '1 minute';
+  } else if (estimatedMinutes < 60) {
+    return `${estimatedMinutes} minutes`;
+  } else {
+    const hours = Math.floor(estimatedMinutes / 60);
+    const remainingMinutes = estimatedMinutes % 60;
+    return remainingMinutes > 0
+      ? `${hours}h ${remainingMinutes}m`
+      : `${hours} hour${hours > 1 ? 's' : ''}`;
+  }
 }
 
 interface ProjectResolution {
@@ -66,25 +110,32 @@ interface ProjectResolution {
 
 export const manageEmbeddingsTool = {
   name: 'manage_embeddings',
-  description: `Coordinate embedding lifecycle tasks with a single entry point.
+  description: `Coordinate embedding lifecycle and workspace configuration with a single entry point.
 
-**Actions**
-- status: Inspect current/stored model configuration, stats, and recommendations.
-- health_check: Run diagnostics with optional auto-fix for model mismatches.
-- migrate: Clear and regenerate embeddings using the active model settings.
-- validate: Inspect stored embeddings for compatibility issues and integrity problems.
+**Workspace Actions**
+- get_workspace: Get current workspace folder and embedding status.
+- set_workspace: Set workspace folder with validation and optional embedding generation (projectPath required).
+- validate_workspace: Validate a workspace path without setting it (projectPath required).
+
+**Embedding Actions**
+- status: Inspect current/stored model configuration, stats, and recommendations (projectPath required).
+- health_check: Run diagnostics with optional auto-fix for model mismatches (projectPath required).
+- create: Generate or regenerate embeddings using the active model settings (projectPath required).
+- validate: Inspect stored embeddings for compatibility issues and integrity problems (projectPath required).
+
+**Project Management Actions**
 - list_projects: Enumerate every project with stored embeddings.
-- delete_project: Remove embeddings for a specific project (requires confirmDeletion=true).
-- project_details: Deep dive into coverage, metadata, and compatibility for one project.
+- delete_project: Remove embeddings for a specific project (requires projectIdentifier and confirmDeletion=true).
+- project_details: Deep dive into coverage, metadata, and compatibility for one project (requires projectIdentifier).
 
 **Inputs**
-- Set action to choose the workflow (defaults to status when a projectPath is supplied).
-- Provide projectPath for workspace-level actions (status, health_check, migrate, validate).
+- Set action to choose the workflow (defaults to get_workspace if no projectPath provided).
+- Provide projectPath for workspace-level and embedding actions.
 - Use projectIdentifier for project-specific lookups (delete_project, project_details).
-- Optional knobs like autoFix, batchSize, includeStats mirror legacy tool behaviour.
+- Optional: autoGenerate (for set_workspace), autoFix, batchSize, includeStats, maxFiles, excludePatterns, allowHiddenFolders.
 
 **Outputs**
-- Returns structured results for the selected action without changing schema alignment with previous tools.`,
+- Returns structured results for the selected action.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -96,7 +147,8 @@ export const manageEmbeddingsTool = {
       },
       projectPath: {
         type: 'string',
-        description: 'Project root directory for workspace-level actions',
+        description:
+          'Project root directory for workspace-level actions. Required for: validate_workspace, set_workspace, status, health_check, create, validate',
       },
       projectIdentifier: {
         type: 'string',
@@ -147,13 +199,42 @@ export const manageEmbeddingsTool = {
         description: 'Must be true to delete stored embeddings for a project',
         default: false,
       },
+      maxFiles: {
+        type: 'number',
+        default: 5000,
+        minimum: 100,
+        maximum: 10000,
+        description:
+          'Maximum number of analyzable files allowed in workspace (for set_workspace/validate_workspace)',
+      },
+      excludePatterns: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Additional glob patterns to exclude when counting files (for set_workspace/validate_workspace)',
+        default: [],
+      },
+      allowHiddenFolders: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Whether to include hidden folders (starting with .) in file counting (for set_workspace/validate_workspace)',
+      },
+      autoGenerate: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Automatically generate embeddings after setting workspace (for set_workspace)',
+      },
     },
     required: [],
   },
 };
 
 export async function handleManageEmbeddings(args: ManageEmbeddingsRequest): Promise<any> {
-  const action = (args?.action || 'status') as ManageEmbeddingsAction;
+  // Default to get_workspace if no action and no projectPath specified
+  const action = (args?.action ||
+    (args?.projectPath ? 'status' : 'get_workspace')) as ManageEmbeddingsAction;
 
   if (!SUPPORTED_ACTIONS.includes(action)) {
     throw new Error(`Unsupported manage_embeddings action: ${String(args?.action)}`);
@@ -161,6 +242,29 @@ export async function handleManageEmbeddings(args: ManageEmbeddingsRequest): Pro
 
   try {
     switch (action) {
+      case 'get_workspace':
+        return await handleGetWorkspace();
+      case 'validate_workspace': {
+        const projectPath = requireProjectPath(args.projectPath);
+        return await handleValidateWorkspace(projectPath, {
+          maxFiles: args.maxFiles,
+          excludePatterns: args.excludePatterns,
+          allowHiddenFolders: args.allowHiddenFolders,
+        });
+      }
+      case 'set_workspace': {
+        const projectPath = requireProjectPath(args.projectPath);
+        return await handleSetWorkspace(
+          projectPath,
+          {
+            maxFiles: args.maxFiles,
+            excludePatterns: args.excludePatterns,
+            allowHiddenFolders: args.allowHiddenFolders,
+          },
+          args.force || false,
+          args.autoGenerate || false
+        );
+      }
       case 'status': {
         const projectPath = requireProjectPath(args.projectPath);
         return await getEmbeddingStatus({ projectPath, format: args.format });
@@ -173,9 +277,9 @@ export async function handleManageEmbeddings(args: ManageEmbeddingsRequest): Pro
           maxFixTime: args.maxFixTime,
         });
       }
-      case 'migrate': {
+      case 'create': {
         const projectPath = requireProjectPath(args.projectPath);
-        return await migrateProjectEmbeddings({
+        return await createProjectEmbeddings({
           projectPath,
           force: args.force,
           batchSize: args.batchSize,
@@ -255,6 +359,67 @@ export async function getEmbeddingStatus(args: {
     const statsLegacy =
       legacyProjectId !== projectId ? await storage.getProjectStats(legacyProjectId) : null;
 
+    // Compute coverage by reusing project_details helper (only if we have embeddings)
+    let coverage: any | undefined;
+    if (statsCurrent && statsCurrent.totalChunks > 0) {
+      try {
+        const details = await getProjectEmbeddingDetails({
+          projectIdentifier: projectId,
+          projectPath: resolvedProjectPath,
+        });
+        coverage = details.coverage;
+      } catch (e) {
+        // Non-fatal; omit coverage if helper fails
+      }
+    }
+
+    // Include background generation status if any
+    let generation: any | undefined;
+    try {
+      const { getBackgroundEmbeddingManager } = await import(
+        '../../local/backgroundEmbeddingManager'
+      );
+      const mgr = getBackgroundEmbeddingManager();
+      const status = mgr.getGenerationStatus(projectId);
+      if (status) {
+        generation = {
+          inProgress: status.isGenerating,
+          startedAt: status.startedAt,
+          completedAt: status.completedAt,
+          progress: status.progress,
+          message: status.isGenerating
+            ? 'Background embedding generation is in progress'
+            : status.completedAt
+              ? 'Background embedding generation completed recently'
+              : undefined,
+        };
+
+        // Add time estimation if generation is in progress
+        if (status.isGenerating && status.progress) {
+          const elapsed = status.startedAt
+            ? Math.round((Date.now() - status.startedAt.getTime()) / 1000)
+            : 0;
+          const remainingFiles = status.progress.totalFiles - status.progress.processedFiles;
+          const remaining = estimateEmbeddingTime(remainingFiles, 5000); // Average file size estimate
+          const progressPercent = Math.round(
+            (status.progress.processedFiles / status.progress.totalFiles) * 100
+          );
+
+          generation.estimatedTimeRemaining = remaining;
+          generation.elapsedTime =
+            elapsed > 0
+              ? `${Math.floor(elapsed / 60)}:${(elapsed % 60).toString().padStart(2, '0')}`
+              : '0:00';
+          generation.progressPercent = progressPercent;
+          generation.progressSummary = `${status.progress.processedFiles}/${status.progress.totalFiles} files (${progressPercent}%)`;
+        }
+      } else {
+        generation = { inProgress: false };
+      }
+    } catch (e) {
+      // Ignore generation status errors silently
+    }
+
     const result = {
       success: true,
       projectId,
@@ -267,12 +432,14 @@ export async function getEmbeddingStatus(args: {
         statsLegacy && statsLegacy.totalChunks > 0
           ? { projectId: legacyProjectId, stats: statsLegacy }
           : undefined,
+      coverage,
+      generation,
       recommendations: [] as string[],
     };
 
     if (!compatibility.compatible) {
       result.recommendations.push(
-        'Embedding model compatibility issues detected. Run manage_embeddings with action="migrate" to refresh embeddings.'
+        'Embedding model compatibility issues detected. Run manage_embeddings with action="create" to refresh embeddings.'
       );
     }
 
@@ -288,13 +455,13 @@ export async function getEmbeddingStatus(args: {
 
     if ((!statsCurrent || statsCurrent.totalChunks === 0) && !statsLegacy) {
       result.recommendations.push(
-        'No embeddings found. They will be generated automatically when local_context or related tools run.'
+        'No embeddings found. They will be generated automatically when embedding-enhanced tools like local_context run.'
       );
     } else if (!statsCurrent && statsLegacy) {
       result.recommendations.push(
-        'Embeddings exist under a legacy project ID. Re-running manage_embeddings with action="migrate" will standardise storage.'
+        'Embeddings exist under a legacy project ID. Re-running manage_embeddings with action="create" will standardise storage.'
       );
-    } else if (statsCurrent && statsCurrent.totalChunks > 0) {
+    } else if (statsCurrent && statsCurrent.totalChunks > 0 && compatibility.compatible) {
       result.recommendations.push('Embeddings look healthy for similarity search.');
     }
 
@@ -361,16 +528,16 @@ export async function runEmbeddingHealthCheck(args: {
     );
     if (!compatibility.compatible) {
       issues.push('Embedding model compatibility issues detected.');
-      recommendations.push('Run manage_embeddings with action="migrate" to regenerate embeddings.');
+      recommendations.push('Run manage_embeddings with action="create" to regenerate embeddings.');
       if (autoFix) {
-        logger.info('Auto-fix enabled. Initiating embedding migration.');
+        logger.info('Auto-fix enabled. Initiating embedding creation.');
         try {
-          const migrationResult = await migrateProjectEmbeddings({
+          const migrationResult = await createProjectEmbeddings({
             projectPath: resolvedProjectPath,
             force: true,
             batchSize: 20,
           });
-          fixes.push(`Migration completed: ${migrationResult.message || 'Embeddings refreshed.'}`);
+          fixes.push(`Creation completed: ${migrationResult.message || 'Embeddings refreshed.'}`);
         } catch (error) {
           issues.push(`Auto-migration failed: ${(error as Error).message}`);
         }
@@ -381,7 +548,7 @@ export async function runEmbeddingHealthCheck(args: {
     if (!stats || stats.totalChunks === 0) {
       issues.push('No embeddings found for this project.');
       recommendations.push(
-        'Trigger local_context or manage_embeddings action="migrate" to populate embeddings.'
+        'Trigger local_context or manage_embeddings action="create" to populate embeddings.'
       );
     }
 
@@ -449,7 +616,7 @@ export async function runEmbeddingHealthCheck(args: {
   }
 }
 
-export async function migrateProjectEmbeddings(args: {
+export async function createProjectEmbeddings(args: {
   projectPath: string;
   force?: boolean;
   batchSize?: number;
@@ -465,7 +632,7 @@ export async function migrateProjectEmbeddings(args: {
 
   const { projectId, projectPath: resolvedProjectPath } = await resolveProject(projectPath);
 
-  logger.info('Starting embedding migration', {
+  logger.info('Starting embedding creation', {
     projectPath: resolvedProjectPath,
     projectId,
     force,
@@ -483,7 +650,12 @@ export async function migrateProjectEmbeddings(args: {
         currentModelConfig.provider,
         currentModelConfig.dimensions
       );
-      if (compatibility.compatible) {
+
+      // Check if we have any embeddings at all
+      const stats = await storage.getProjectStats(projectId);
+
+      // If no embeddings exist, we should generate them (not skip)
+      if (stats && stats.totalChunks > 0 && compatibility.compatible) {
         return {
           success: true,
           skipped: true,
@@ -522,14 +694,14 @@ export async function migrateProjectEmbeddings(args: {
       compatibility: postMigrationCompatibility,
       stats: newStats,
       recommendations: [
-        'Migration completed successfully.',
+        'Embedding creation completed successfully.',
         'Embeddings are now compatible with the active model configuration.',
         'You can resume semantic search and context generation tools.',
       ],
-      message: 'Migration completed successfully.',
+      message: 'Embedding creation completed successfully.',
     };
 
-    logger.info('Embedding migration completed', {
+    logger.info('Embedding creation completed', {
       projectId,
       filesProcessed: progress.processedFiles,
       embeddingsGenerated: progress.embeddings,
@@ -538,11 +710,11 @@ export async function migrateProjectEmbeddings(args: {
 
     return result;
   } catch (error) {
-    logger.error('Embedding migration failed', {
+    logger.error('Embedding creation failed', {
       error: error instanceof Error ? error.message : String(error),
       projectPath: resolvedProjectPath,
     });
-    throw new Error(`Embedding migration failed: ${(error as Error).message}`);
+    throw new Error(`Embedding creation failed: ${(error as Error).message}`);
   }
 }
 
@@ -627,9 +799,7 @@ export async function validateProjectEmbeddings(args: {
           integrityIssues.push(`Embedding ${embedding.id} has invalid vector data.`);
         }
 
-        const hasInvalidValues = embeddingVector.some(
-          (value: number) => !Number.isFinite(value)
-        );
+        const hasInvalidValues = embeddingVector.some((value: number) => !Number.isFinite(value));
         if (hasInvalidValues) {
           integrityIssues.push(`Embedding ${embedding.id} contains NaN or infinite values.`);
         }
@@ -677,9 +847,11 @@ async function resolveProject(projectPath: string): Promise<ProjectResolution> {
   const resolvedProjectPath = validateAndResolvePath(projectPath);
   const projectInfo = await ProjectIdentifier.getInstance().identifyProject(resolvedProjectPath);
   const projectId = projectInfo.id;
+
+  // Use workspace root for legacy ID to ensure consistency across subdirectories
   const legacyProjectId = crypto
     .createHash('sha256')
-    .update(resolvedProjectPath)
+    .update(projectInfo.workspaceRoot)
     .digest('hex')
     .substring(0, 16);
 
@@ -746,3 +918,244 @@ async function getCurrentModelConfiguration(): Promise<{
 }
 
 export { getCurrentModelConfiguration };
+
+/**
+ * Workspace configuration handlers (migrated from workspaceConfig.ts)
+ */
+
+async function handleGetWorkspace(): Promise<any> {
+  const { getCurrentWorkspaceFolder } = await import('../utils/workspaceValidator');
+  const currentWorkspace = getCurrentWorkspaceFolder();
+
+  logger.info('📍 Current workspace status', {
+    workspace: currentWorkspace || '(not set)',
+    fromEnv: !!process.env.WORKSPACE_FOLDER,
+    fromBaseDir: !!process.env.AMBIANCE_BASE_DIR,
+  });
+
+  let embeddingStatus = null;
+  if (currentWorkspace) {
+    logger.info('🔍 Checking embedding status for current workspace', {
+      workspace: currentWorkspace,
+    });
+    try {
+      embeddingStatus = await getEmbeddingStatus({ projectPath: currentWorkspace });
+    } catch (error) {
+      logger.warn('⚠️ Could not check embedding status', {
+        workspace: currentWorkspace,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    success: true,
+    workspace: currentWorkspace || null,
+    source: process.env.WORKSPACE_FOLDER
+      ? 'WORKSPACE_FOLDER'
+      : process.env.AMBIANCE_BASE_DIR
+        ? 'AMBIANCE_BASE_DIR'
+        : 'none',
+    embeddingStatus,
+    message: currentWorkspace
+      ? `Current workspace: ${currentWorkspace}`
+      : 'No workspace folder configured. Use action "set_workspace" to configure one.',
+    recommendations: embeddingStatus?.recommendations || [],
+  };
+}
+
+async function handleValidateWorkspace(
+  path: string,
+  options: {
+    maxFiles?: number;
+    excludePatterns?: string[];
+    allowHiddenFolders?: boolean;
+  }
+): Promise<any> {
+  const { validateWorkspaceFolder } = await import('../utils/workspaceValidator');
+
+  logger.info('🔍 Validating workspace path', { path, options });
+
+  const validation = await validateWorkspaceFolder(path, options);
+
+  return {
+    success: true,
+    validation,
+    message: validation.isValid
+      ? `✅ Path is valid for workspace: ${validation.path} (${validation.fileCount} files)`
+      : `❌ Path is not suitable for workspace: ${validation.error}`,
+    recommendations: validation.isValid ? [] : getWorkspaceRecommendations(validation),
+  };
+}
+
+async function handleSetWorkspace(
+  path: string,
+  options: {
+    maxFiles?: number;
+    excludePatterns?: string[];
+    allowHiddenFolders?: boolean;
+  },
+  force: boolean,
+  autoGenerate: boolean
+): Promise<any> {
+  const { validateWorkspaceFolder, setWorkspaceFolder } = await import(
+    '../utils/workspaceValidator'
+  );
+
+  logger.info('🏠 Setting workspace folder', { path, options, force, autoGenerate });
+
+  // First validate the path
+  const validation = await validateWorkspaceFolder(path, options);
+
+  if (!validation.isValid) {
+    return {
+      success: false,
+      error: validation.error,
+      validation,
+      recommendations: getWorkspaceRecommendations(validation),
+      message: `Cannot set workspace: ${validation.error}`,
+    };
+  }
+
+  // Check for warnings
+  if (validation.warnings && validation.warnings.length > 0 && !force) {
+    return {
+      success: false,
+      error: 'Workspace has warnings. Use force=true to override.',
+      validation,
+      warnings: validation.warnings,
+      message: `Workspace has warnings: ${validation.warnings.join(', ')}. Use force=true if you want to proceed anyway.`,
+    };
+  }
+
+  // Set the workspace
+  setWorkspaceFolder(validation.path!);
+
+  logger.info('✅ Workspace folder set successfully', {
+    workspace: validation.path,
+    fileCount: validation.fileCount,
+    hadWarnings: !!validation.warnings,
+  });
+
+  // Mark workspace as initialized
+  process.env.WORKSPACE_INITIALIZED = 'true';
+  logger.info('🔧 Workspace initialization flag set');
+
+  // Check embedding status for the newly set workspace
+  logger.info('🔍 Checking embedding status for newly set workspace', {
+    workspace: validation.path,
+  });
+
+  let embeddingStatus = null;
+  try {
+    embeddingStatus = await getEmbeddingStatus({ projectPath: validation.path! });
+  } catch (error) {
+    logger.warn('⚠️ Could not check embedding status', {
+      workspace: validation.path,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  let embeddingGenerationResult = null;
+  let embeddingMessage = '';
+
+  // Handle automatic embedding generation if requested
+  if (autoGenerate && LocalEmbeddingStorage.isEnabled()) {
+    logger.info('🚀 Starting automatic embedding generation', {
+      workspace: validation.path,
+      fileCount: validation.fileCount,
+    });
+
+    try {
+      const projectInfo = await ProjectIdentifier.getInstance().identifyProject(validation.path!);
+      if (projectInfo) {
+        const embeddingGenerator = new LocalEmbeddingGenerator();
+        const progress = await embeddingGenerator.generateProjectEmbeddings(
+          projectInfo.id,
+          validation.path!,
+          {
+            batchSize: 10,
+            rateLimit: 500,
+            maxChunkSize: 1500,
+            filePatterns: [
+              '**/*.{ts,tsx,js,jsx,py,go,rs,java,cpp,c,h,hpp,cs,rb,php,swift,kt,scala,clj,hs,ml,r,sql,sh,bash,zsh,md}',
+            ],
+          }
+        );
+
+        embeddingGenerationResult = {
+          success: true,
+          filesProcessed: progress.processedFiles,
+          chunksCreated: progress.totalChunks,
+          embeddings: progress.embeddings,
+          errors: progress.errors.length,
+        };
+
+        embeddingMessage = `Generated ${progress.embeddings} embeddings from ${progress.processedFiles} files`;
+
+        logger.info('✅ Automatic embedding generation completed', {
+          workspace: validation.path,
+          result: embeddingGenerationResult,
+        });
+      }
+    } catch (error) {
+      embeddingMessage = `Embedding generation failed: ${error instanceof Error ? error.message : String(error)}`;
+      logger.error('❌ Automatic embedding generation failed', {
+        workspace: validation.path,
+        error: embeddingMessage,
+      });
+    }
+  } else if (!autoGenerate) {
+    embeddingMessage = 'Embeddings will be generated automatically when AI tools are first used';
+  }
+
+  return {
+    success: true,
+    workspace: validation.path,
+    fileCount: validation.fileCount,
+    warnings: validation.warnings,
+    embeddingStatus,
+    embeddingGeneration: autoGenerate ? embeddingGenerationResult : null,
+    message:
+      `✅ Workspace set successfully: ${validation.path} (${validation.fileCount} files)` +
+      (validation.warnings ? ` [Warnings: ${validation.warnings.length}]` : '') +
+      (autoGenerate
+        ? ` [Embedding generation: ${embeddingGenerationResult?.success ? 'completed' : 'failed'}]`
+        : ''),
+    embeddingMessage,
+  };
+}
+
+function getWorkspaceRecommendations(validation: any): string[] {
+  const recommendations: string[] = [];
+
+  if (!validation.isValid && validation.error) {
+    if (validation.error.includes('root drive')) {
+      recommendations.push('Use a specific project directory instead of root drive');
+      recommendations.push('Example: C:\\Projects\\MyProject instead of C:\\');
+    }
+
+    if (validation.error.includes('too many files')) {
+      recommendations.push('Choose a more specific subdirectory');
+      recommendations.push('Add exclude patterns for build/dependency folders');
+      recommendations.push('Consider using folderPath parameter in other tools instead');
+    }
+
+    if (validation.error.includes('does not exist')) {
+      recommendations.push('Create the directory first');
+      recommendations.push('Check the path spelling and access permissions');
+    }
+
+    if (validation.error.includes('not a directory')) {
+      recommendations.push('Use the parent directory instead');
+      recommendations.push('Check that the path points to a folder, not a file');
+    }
+  }
+
+  if (recommendations.length === 0) {
+    recommendations.push('Try a different path');
+    recommendations.push('Use action "validate_workspace" to check paths before setting');
+  }
+
+  return recommendations;
+}

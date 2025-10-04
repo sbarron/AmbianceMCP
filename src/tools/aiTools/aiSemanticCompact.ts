@@ -175,7 +175,8 @@ Accepts absolute paths or relative paths (when workspace can be detected).
         default: 10,
         minimum: 1,
         maximum: 50,
-        description: 'Maximum number of semantically similar code chunks to retrieve. Higher values (20-40) provide broader coverage for exploration; lower values (5-10) focus on highly relevant matches. Default 10 balances breadth with AI analysis cost.',
+        description:
+          'Maximum number of semantically similar code chunks to retrieve. Higher values (20-40) provide broader coverage for exploration; lower values (5-10) focus on highly relevant matches. Default 10 balances breadth with AI analysis cost.',
       },
       generateEmbeddingsIfMissing: {
         type: 'boolean',
@@ -483,7 +484,9 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
 
         // Safety check for enhanced result
         if (!enhancedResult || !enhancedResult.content) {
-          logger.warn('⚠️ Enhanced compactor returned empty result, falling back to standard compaction');
+          logger.warn(
+            '⚠️ Enhanced compactor returned empty result, falling back to standard compaction'
+          );
           canUseEmbeddings = false;
         } else {
           // Validate enhanced context before proceeding
@@ -500,7 +503,9 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
             if (!enhancedResult.metadata?.embeddingsUsed) {
               validateEnhancedContext(enhancedResult.content, enhancedResult.metadata);
             } else {
-              logger.debug('⏭️ Skipping validation for embedding-based context (will validate extracted chunks)');
+              logger.debug(
+                '⏭️ Skipping validation for embedding-based context (will validate extracted chunks)'
+              );
             }
 
             logger.debug('✅ Enhanced context validation passed', {
@@ -543,14 +548,15 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
             if (extractedChunks.length > 0) {
               logger.info('✅ Using embedding chunks', {
                 chunksCount: extractedChunks.length,
-                averageConfidence: extractedChunks.length > 0
-                  ? (
-                      extractedChunks.reduce(
-                        (sum, chunk) => sum + (chunk.summary?.confidence || 0),
-                        0
-                      ) / extractedChunks.length
-                    ).toFixed(3)
-                  : 0,
+                averageConfidence:
+                  extractedChunks.length > 0
+                    ? (
+                        extractedChunks.reduce(
+                          (sum, chunk) => sum + (chunk.summary?.confidence || 0),
+                          0
+                        ) / extractedChunks.length
+                      ).toFixed(3)
+                    : 0,
               });
 
               // Convert enhanced result back to compactedProject format for AI processing
@@ -578,13 +584,14 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
             }
           }
 
-          embeddingStats = enhancedResult && enhancedResult.metadata && enhancedResult.metadata.embeddingsUsed
-            ? {
-                embeddingsUsed: true,
-                similarChunksFound: enhancedResult.metadata.similarChunksFound,
-                embeddingStats: enhancedResult.metadata.embeddingStats,
-              }
-            : null;
+          embeddingStats =
+            enhancedResult && enhancedResult.metadata && enhancedResult.metadata.embeddingsUsed
+              ? {
+                  embeddingsUsed: true,
+                  similarChunksFound: enhancedResult.metadata.similarChunksFound,
+                  embeddingStats: enhancedResult.metadata.embeddingStats,
+                }
+              : null;
         }
       } catch (error) {
         logger.error('❌ Error during enhanced compaction, falling back to standard compaction', {
@@ -597,7 +604,9 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
     // If we didn't use embeddings or embeddings failed, use standard compaction
     if (!compactedProject) {
       logger.info('📝 Using standard semantic compaction', {
-        reason: !canUseEmbeddings ? 'Enhanced mode not available or not requested' : 'Enhanced mode failed',
+        reason: !canUseEmbeddings
+          ? 'Enhanced mode not available or not requested'
+          : 'Enhanced mode failed',
       });
 
       const compactor = new SemanticCompactor(validatedProjectPath);
@@ -621,7 +630,8 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
       return {
         success: false,
         error: 'Internal error: Unable to generate project context',
-        suggestion: 'Check server logs for more details. This may be due to missing embeddings or project structure issues.',
+        suggestion:
+          'Check server logs for more details. This may be due to missing embeddings or project structure issues.',
         projectPath: validatedProjectPath,
         duration: Date.now() - startTime,
       };

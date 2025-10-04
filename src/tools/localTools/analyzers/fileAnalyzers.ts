@@ -13,6 +13,7 @@
 import * as path from 'path';
 import { logger } from '../../../utils/logger';
 import { formatFileSummaryOutput } from '../formatters/fileSummaryFormatters';
+import { JsonASTAnalyzer } from './jsonASTAnalyzer';
 
 /**
  * Extract file header comment block or first 15 lines for context
@@ -169,7 +170,9 @@ export async function handleNonCodeFile(
   } catch (error) {
     logger.error('Failed to analyze non-code file', {
       filePath,
+      language,
       error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
     });
 
     return {
@@ -182,7 +185,7 @@ export async function handleNonCodeFile(
 }
 
 /**
- * Analyze JSON files - extract keys, structure, and validation
+ * Analyze JSON files - extract keys, structure, and validation using AST-based approach
  */
 export async function analyzeJsonFile(
   content: string,
@@ -191,30 +194,93 @@ export async function analyzeJsonFile(
   maxSymbols: number
 ): Promise<any> {
   try {
-    const parsed = JSON.parse(content);
-    const keys = Object.keys(parsed);
+    logger.debug('analyzeJsonFile called', {
+      contentLength: content?.length,
+      hasAnalysis: !!analysis,
+      includeSymbols,
+      maxSymbols,
+    });
 
+    // Use new AST-based analyzer
+    const astAnalyzer = new JsonASTAnalyzer();
+    await astAnalyzer.initialize();
+
+    const jsonInfo = await astAnalyzer.analyzeJsonContent(content);
+
+    logger.debug('JSON AST analysis result', {
+      hasResult: !!jsonInfo,
+      isPrimitive: jsonInfo?.isPrimitive,
+      isArray: jsonInfo?.isArray,
+      isObject: jsonInfo?.isObject,
+      topLevelKeys: jsonInfo?.topLevelKeys,
+      keyCount: jsonInfo?.keyCount,
+    });
+
+    if (!jsonInfo) {
+      throw new Error('Failed to analyze JSON with AST analyzer');
+    }
+
+    // Map AST analysis to existing analysis structure for compatibility
+    if (jsonInfo.isPrimitive) {
+      analysis.symbolCount = 0;
+      analysis.structure = `JSON ${jsonInfo.primitiveType}`;
+      analysis.jsonInfo = {
+        topLevelKeys: [],
+        totalKeys: 0,
+        hasNesting: false,
+        dataTypes: [],
+        primitiveType: jsonInfo.primitiveType,
+      };
+      return analysis;
+    }
+
+    if (jsonInfo.isArray) {
+      analysis.symbolCount = jsonInfo.arrayLength || 0;
+      analysis.structure = 'JSON array';
+      analysis.jsonInfo = {
+        topLevelKeys: [],
+        totalKeys: jsonInfo.arrayLength || 0,
+        hasNesting: jsonInfo.depth > 1,
+        dataTypes: [],
+        arrayLength: jsonInfo.arrayLength,
+      };
+      return analysis;
+    }
+
+    // Object analysis
+    const keys = jsonInfo.topLevelKeys || [];
     analysis.symbolCount = keys.length;
-    analysis.structure = 'JSON configuration';
+
+    // Use detected config type or default
+    analysis.structure = jsonInfo.configType || 'JSON configuration';
+
     analysis.jsonInfo = {
       topLevelKeys: keys.slice(0, 10),
       totalKeys: keys.length,
-      hasNesting: keys.some(key => typeof parsed[key] === 'object'),
-      dataTypes: keys.map(key => ({ key, type: typeof parsed[key] })),
+      hasNesting: jsonInfo.depth > 1,
+      dataTypes: jsonInfo.nestedStructure
+        ? Object.entries(jsonInfo.nestedStructure).map(([key, info]: [string, any]) => ({
+            key,
+            type: info.type,
+            depth: info.depth,
+          }))
+        : [],
+      depth: jsonInfo.depth,
+      configType: jsonInfo.configType,
+      nestedStructure: jsonInfo.nestedStructure || {},
     };
 
     if (includeSymbols) {
-      analysis.symbols = keys.slice(0, maxSymbols).map(key => ({
-        name: key,
-        type: typeof parsed[key],
-        value: typeof parsed[key] === 'object' ? '[Object]' : String(parsed[key]).slice(0, 50),
-      }));
+      // Use symbols from AST analyzer
+      const astResult = await astAnalyzer.analyzeContent(content);
+      if (astResult?.symbols) {
+        analysis.symbols = astResult.symbols.slice(0, maxSymbols).map(sym => ({
+          name: sym.name,
+          type: sym.metadata?.valueType || 'unknown',
+          depth: sym.metadata?.depth || 0,
+        }));
+      }
     }
-
-    // Detect common JSON file types
-    if (parsed.name && parsed.version) analysis.structure = 'Package configuration';
-    if (parsed.compilerOptions) analysis.structure = 'TypeScript configuration';
-    if (parsed.rules || parsed.extends) analysis.structure = 'Linting configuration';
   } catch (error) {
     analysis.symbolCount = 0;
     analysis.structure = 'Invalid JSON';

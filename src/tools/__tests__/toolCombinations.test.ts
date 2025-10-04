@@ -4,8 +4,16 @@
  */
 
 import { describe, test, beforeEach, afterEach, expect } from '@jest/globals';
-import { setupStandardMocks, setupTestEnvironment, cleanupMocks } from '../../__tests__/utils/mockSetup';
-import { createTestProject, TestPatterns, VALID_TEST_CONTENT } from '../../__tests__/utils/testHelpers';
+import {
+  setupStandardMocks,
+  setupTestEnvironment,
+  cleanupMocks,
+} from '../../__tests__/utils/mockSetup';
+import {
+  createTestProject,
+  TestPatterns,
+  VALID_TEST_CONTENT,
+} from '../../__tests__/utils/testHelpers';
 
 setupStandardMocks();
 
@@ -17,7 +25,7 @@ describe('Tool Combination Integration Tests', () => {
     cleanupMocks();
     const env = setupTestEnvironment({
       USE_LOCAL_EMBEDDINGS: 'true',
-      AMBIANCE_API_KEY: 'test-key'
+      AMBIANCE_API_KEY: 'test-key',
     });
     envRestore = env.restore;
 
@@ -25,7 +33,7 @@ describe('Tool Combination Integration Tests', () => {
     testProject = await createTestProject([
       {
         name: 'src/index.ts',
-        content: VALID_TEST_CONTENT.codeContent
+        content: VALID_TEST_CONTENT.codeContent,
       },
       {
         name: 'src/utils.ts',
@@ -42,7 +50,7 @@ export interface Config {
   apiKey: string;
   timeout: number;
 }
-        `
+        `,
       },
       {
         name: 'src/database.ts',
@@ -64,8 +72,8 @@ export class DatabaseConnection {
     // Disconnection logic
   }
 }
-        `
-      }
+        `,
+      },
     ]);
   });
 
@@ -85,7 +93,7 @@ export class DatabaseConnection {
         projectPath: testProject.path,
         format: 'structured',
         includeContent: true,
-        useAI: false
+        useAI: false,
       });
 
       expect(hintsResult.success).toBe(true);
@@ -96,7 +104,7 @@ export class DatabaseConnection {
         projectPath: testProject.path,
         query: 'database connection configuration',
         maxTokens: 4000,
-        format: 'enhanced'
+        format: 'enhanced',
       });
 
       expect(contextResult.success).toBe(true);
@@ -114,7 +122,7 @@ export class DatabaseConnection {
         filePath: `${testProject.path}/src/database.ts`,
         projectPath: testProject.path,
         includeSymbols: true,
-        maxSymbols: 10
+        maxSymbols: 10,
       });
 
       expect(summaryResult.success).toBe(true);
@@ -124,7 +132,7 @@ export class DatabaseConnection {
         projectPath: testProject.path,
         query: 'database connections and configuration',
         maxTokens: 4000,
-        format: 'enhanced'
+        format: 'enhanced',
       });
 
       expect(contextResult.success).toBe(true);
@@ -144,7 +152,7 @@ export class DatabaseConnection {
       try {
         hintsResult = await handleProjectHints({
           projectPath: '/nonexistent/path',
-          format: 'structured'
+          format: 'structured',
         });
       } catch (error) {
         expect(error).toBeDefined();
@@ -154,7 +162,7 @@ export class DatabaseConnection {
       const summaryResult = await handleFileSummary({
         filePath: `${testProject.path}/src/index.ts`,
         projectPath: testProject.path,
-        includeSymbols: true
+        includeSymbols: true,
       });
 
       expect(summaryResult.success).toBe(true);
@@ -167,15 +175,17 @@ export class DatabaseConnection {
       const files = [
         `${testProject.path}/src/index.ts`, // valid
         '/nonexistent/file.ts', // invalid
-        `${testProject.path}/src/utils.ts` // valid
+        `${testProject.path}/src/utils.ts`, // valid
       ];
 
       const results = await Promise.allSettled(
-        files.map(filePath => handleFileSummary({
-          filePath,
-          projectPath: testProject.path,
-          includeSymbols: true
-        }))
+        files.map(filePath =>
+          handleFileSummary({
+            filePath,
+            projectPath: testProject.path,
+            includeSymbols: true,
+          })
+        )
       );
 
       // Should have both successful and failed results
@@ -197,22 +207,22 @@ export class DatabaseConnection {
       const promises = [
         handleFileSummary({
           filePath: `${testProject.path}/src/index.ts`,
-          projectPath: testProject.path
+          projectPath: testProject.path,
         }),
         handleFileSummary({
           filePath: `${testProject.path}/src/utils.ts`,
-          projectPath: testProject.path
+          projectPath: testProject.path,
         }),
         handleSemanticCompact({
           projectPath: testProject.path,
           query: 'configuration management',
-          maxTokens: 2000
+          maxTokens: 2000,
         }),
         handleSemanticCompact({
           projectPath: testProject.path,
           query: 'database operations',
-          maxTokens: 2000
-        })
+          maxTokens: 2000,
+        }),
       ];
 
       const results = await Promise.all(promises);
@@ -231,7 +241,7 @@ export class DatabaseConnection {
         const result = await handleSemanticCompact({
           projectPath: testProject.path,
           query: `test query ${i}`,
-          maxTokens: 1000
+          maxTokens: 1000,
         });
 
         expect(result.success).toBe(true);
@@ -254,7 +264,7 @@ export class DatabaseConnection {
           projectPath: testProject.path,
           query: 'project structure',
           maxTokens: 2000,
-          format
+          format,
         });
 
         expect(result.success).toBe(true);
@@ -271,7 +281,7 @@ export class DatabaseConnection {
         const result = await handleSemanticCompact({
           projectPath: testProject.path,
           query: 'comprehensive analysis',
-          maxTokens
+          maxTokens,
         });
 
         expect(result.success).toBe(true);
@@ -290,7 +300,7 @@ export class DatabaseConnection {
       const hintsResult = await handleProjectHints({
         projectPath: testProject.path,
         format: 'structured',
-        includeContent: true
+        includeContent: true,
       });
 
       expect(hintsResult.success).toBe(true);
@@ -300,7 +310,7 @@ export class DatabaseConnection {
       const contextResult = await handleSemanticCompact({
         projectPath: testProject.path,
         query: 'all files and functions',
-        maxTokens: 4000
+        maxTokens: 4000,
       });
 
       expect(contextResult.success).toBe(true);
@@ -317,7 +327,7 @@ export class DatabaseConnection {
       const emptyQueryResult = await handleSemanticCompact({
         projectPath: testProject.path,
         query: '',
-        maxTokens: 2000
+        maxTokens: 2000,
       });
 
       // Should handle gracefully
@@ -327,7 +337,7 @@ export class DatabaseConnection {
       const specificResult = await handleSemanticCompact({
         projectPath: testProject.path,
         query: 'DatabaseConnection constructor parameters and error handling patterns',
-        maxTokens: 2000
+        maxTokens: 2000,
       });
 
       expect(specificResult.success).toBe(true);

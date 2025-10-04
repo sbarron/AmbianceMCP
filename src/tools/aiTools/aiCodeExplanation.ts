@@ -161,7 +161,10 @@ export async function handleAICodeExplanation(args: any): Promise<any> {
     baseTimeoutMs = parseInt(process.env.AI_CODE_EXPLANATION_TIMEOUT_MS || '60000', 10); // 60 seconds base (configurable)
     const codeMultiplier = Math.max(1, Math.floor(codeContent.length / 5000)); // +1 per 5KB of code
     const thinkingModelMultiplier = openai.getProviderInfo().model.includes('thinking') ? 3 : 1; // 3x for thinking models
-    const dynamicTimeoutMs = Math.min(600000, baseTimeoutMs * codeMultiplier * thinkingModelMultiplier); // Max 10 minutes
+    const dynamicTimeoutMs = Math.min(
+      600000,
+      baseTimeoutMs * codeMultiplier * thinkingModelMultiplier
+    ); // Max 10 minutes
 
     logger.info('⏱️ Code explanation timeout calculated', {
       codeLength: codeContent.length,
@@ -177,10 +180,12 @@ export async function handleAICodeExplanation(args: any): Promise<any> {
     // Get AI explanation with timeout
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => {
-        reject(new Error(
-          `Code explanation timed out after ${dynamicTimeoutMs / 1000}s. ` +
-          `Current timeout: ${baseTimeoutMs / 1000}s base × ${codeMultiplier} (code size) × ${thinkingModelMultiplier} (model type)`
-        ));
+        reject(
+          new Error(
+            `Code explanation timed out after ${dynamicTimeoutMs / 1000}s. ` +
+              `Current timeout: ${baseTimeoutMs / 1000}s base × ${codeMultiplier} (code size) × ${thinkingModelMultiplier} (model type)`
+          )
+        );
       }, dynamicTimeoutMs);
     });
 
@@ -233,9 +238,10 @@ export async function handleAICodeExplanation(args: any): Promise<any> {
       success: false,
       error: error instanceof Error ? error.message : String(error),
       duration: Date.now() - startTime,
-      suggestion: error instanceof Error && error.message.includes('timed out')
-        ? `Consider increasing timeout via AI_CODE_EXPLANATION_TIMEOUT_MS environment variable (current: ${baseTimeoutMs / 1000}s). Check OpenAI API key and network connectivity.`
-        : 'Check OpenAI API key and ensure the code/file is accessible',
+      suggestion:
+        error instanceof Error && error.message.includes('timed out')
+          ? `Consider increasing timeout via AI_CODE_EXPLANATION_TIMEOUT_MS environment variable (current: ${baseTimeoutMs / 1000}s). Check OpenAI API key and network connectivity.`
+          : 'Check OpenAI API key and ensure the code/file is accessible',
     };
   }
 }

@@ -24,7 +24,6 @@ let Python: any = null;
 
 // Dynamic import for ESM-only tree-sitter packages
 async function initializeTreeSitterParsers() {
-
   try {
     if (!Parser) {
       Parser = await import('tree-sitter');
@@ -257,15 +256,15 @@ export class TreeSitterProcessor {
         return { chunks, symbols: [], xrefs: [] };
       }
 
-      // Validate root node
-      if (!tree.rootNode || tree.rootNode.type !== 'program') {
-        logger.warn('Unexpected root node type, using fallback', {
+      // Validate root node with cross-language support
+      const rootType = tree.rootNode.type;
+      const acceptedRootTypes = new Set(['program', 'module']); // JS/TS: program, Python: module
+      if (!acceptedRootTypes.has(rootType)) {
+        logger.warn('Unexpected root node type; continuing with cautious extraction', {
           filePath,
-          rootNodeType: tree.rootNode?.type,
-          expectedType: 'program',
+          rootNodeType: rootType,
+          acceptedRootTypes: Array.from(acceptedRootTypes).join(', '),
         });
-        const chunks = this.fallbackChunking(content, filePath);
-        return { chunks, symbols: [], xrefs: [] };
       }
 
       const chunks = this.extractChunks(tree, content, language);
@@ -409,7 +408,16 @@ export class TreeSitterProcessor {
         (child: any) =>
           child && (child.type === 'identifier' || child.type === 'property_identifier')
       );
-      return nameNode?.text;
+      if (nameNode?.text) return nameNode.text;
+
+      // Fallback: search descendants for an identifier (helps for Python decorated_definition)
+      try {
+        if (typeof node.descendantsOfType === 'function') {
+          const ids = node.descendantsOfType(['identifier', 'property_identifier']);
+          if (ids && ids[0] && ids[0].text) return ids[0].text;
+        }
+      } catch {}
+      return undefined;
     } catch (error) {
       logger.warn('Error getting symbol name', {
         error: error instanceof Error ? error.message : String(error),
@@ -518,39 +526,75 @@ export class TreeSitterProcessor {
 
   private extractXRefs(tree: any, language: string): CodeXRef[] {
     const xrefs: CodeXRef[] = [];
-    if (language !== 'typescript' && language !== 'javascript') {
-      return xrefs;
-    }
-
     const traverse = (node: any) => {
-      if (node.type === 'import_statement' || node.type === 'export_statement') {
-        const kind = node.type === 'import_statement' ? 'import' : 'export';
-        const pathNode = node.descendantsOfType('string_literal')[0];
-        const targetPath = pathNode?.text.slice(1, -1);
+      if (language === 'typescript' || language === 'javascript') {
+        if (node.type === 'import_statement' || node.type === 'export_statement') {
+          const kind = node.type === 'import_statement' ? 'import' : 'export';
+          const pathNode =
+            typeof node.descendantsOfType === 'function'
+              ? node.descendantsOfType('string_literal')[0]
+              : undefined;
+          const targetPath = pathNode?.text ? pathNode.text.slice(1, -1) : undefined;
 
-        const importClause = node.descendantsOfType('import_clause')[0];
-        if (importClause) {
-          const namedImports = importClause.descendantsOfType('named_imports')[0];
-          if (namedImports) {
-            for (const specifier of namedImports.descendantsOfType('import_specifier')) {
-              xrefs.push({
-                name: specifier.text,
-                kind,
-                startLine: specifier.startPosition.row + 1,
-                endLine: specifier.endPosition.row + 1,
-                targetPath,
-              });
+          const importClause =
+            typeof node.descendantsOfType === 'function'
+              ? node.descendantsOfType('import_clause')[0]
+              : undefined;
+          if (importClause && typeof importClause.descendantsOfType === 'function') {
+            const namedImports = importClause.descendantsOfType('named_imports')[0];
+            if (namedImports) {
+              for (const specifier of namedImports.descendantsOfType('import_specifier')) {
+                xrefs.push({
+                  name: specifier.text,
+                  kind,
+                  startLine: specifier.startPosition.row + 1,
+                  endLine: specifier.endPosition.row + 1,
+                  targetPath,
+                });
+              }
             }
           }
         }
+      } else if (language === 'python') {
+        // Python import extraction: import_statement, import_from_statement
+        if (node.type === 'import_statement' || node.type === 'import_from_statement') {
+          const kind: 'import' = 'import';
+          let modulePath: string | undefined;
+          try {
+            if (typeof node.descendantsOfType === 'function') {
+              const dotted = node.descendantsOfType('dotted_name');
+              if (dotted && dotted[0] && dotted[0].text) modulePath = dotted[0].text;
+            }
+          } catch {}
+
+          try {
+            if (typeof node.descendantsOfType === 'function') {
+              const names = node.descendantsOfType(['aliased_import', 'identifier']);
+              for (const n of names) {
+                if (!n || !n.text) continue;
+                xrefs.push({
+                  name: n.text,
+                  kind,
+                  startLine: node.startPosition.row + 1,
+                  endLine: node.endPosition.row + 1,
+                  targetPath: modulePath,
+                });
+              }
+            }
+          } catch {}
+        }
       }
 
-      for (const child of node.children) {
-        traverse(child);
+      if (node.children && Array.isArray(node.children)) {
+        for (const child of node.children) {
+          traverse(child);
+        }
       }
     };
 
-    traverse(tree.rootNode);
+    if (tree?.rootNode) {
+      traverse(tree.rootNode);
+    }
     return xrefs;
   }
 }

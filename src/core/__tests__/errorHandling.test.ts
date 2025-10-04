@@ -6,7 +6,12 @@
 import { describe, test, beforeEach, afterEach, expect } from '@jest/globals';
 // import { setupStandardMocks, setupTestEnvironment, cleanupMocks } from '../../__tests__/utils/mockSetup';
 import { TestPatterns, VALID_TEST_CONTENT } from '../../__tests__/utils/testHelpers';
-import { ValidationError, ValidationHelper, DiscoverFilesInputSchema, ReadFileInputSchema } from '../validation';
+import {
+  ValidationError,
+  ValidationHelper,
+  DiscoverFilesInputSchema,
+  ReadFileInputSchema,
+} from '../validation';
 import { z } from 'zod';
 
 describe('Core Error Handling', () => {
@@ -109,7 +114,9 @@ describe('Core Error Handling', () => {
   describe('Network Error Paths', () => {
     test('should handle connection timeout errors', async () => {
       const { apiClient } = require('../../client/apiClient');
-      apiClient.post = jest.fn().mockRejectedValue(new Error('ECONNRESET: Connection reset by peer'));
+      apiClient.post = jest
+        .fn()
+        .mockRejectedValue(new Error('ECONNRESET: Connection reset by peer'));
 
       await TestPatterns.expectToThrow(
         () => apiClient.post('/test', {}),
@@ -129,7 +136,9 @@ describe('Core Error Handling', () => {
 
     test('should handle SSL certificate errors', async () => {
       const { apiClient } = require('../../client/apiClient');
-      apiClient.post = jest.fn().mockRejectedValue(new Error('CERT_UNTRUSTED: certificate not trusted'));
+      apiClient.post = jest
+        .fn()
+        .mockRejectedValue(new Error('CERT_UNTRUSTED: certificate not trusted'));
 
       await TestPatterns.expectToThrow(
         () => apiClient.post('/test', {}),
@@ -143,10 +152,7 @@ describe('Core Error Handling', () => {
       (rateLimitError as any).status = 429;
       apiClient.post = jest.fn().mockRejectedValue(rateLimitError);
 
-      await TestPatterns.expectToThrow(
-        () => apiClient.post('/test', {}),
-        'Rate limit exceeded'
-      );
+      await TestPatterns.expectToThrow(() => apiClient.post('/test', {}), 'Rate limit exceeded');
     });
   });
 
@@ -195,7 +201,7 @@ describe('Core Error Handling', () => {
     test('should handle out of memory errors', () => {
       const originalStringRepeat = String.prototype.repeat;
 
-      String.prototype.repeat = function() {
+      String.prototype.repeat = function () {
         throw new Error('RangeError: Invalid string length');
       };
 
@@ -278,7 +284,7 @@ describe('Core Error Handling', () => {
   describe('Resource Cleanup Error Paths', () => {
     test('should handle cleanup failures gracefully', async () => {
       const resource = {
-        cleanup: jest.fn().mockRejectedValue(new Error('Cleanup failed'))
+        cleanup: jest.fn().mockRejectedValue(new Error('Cleanup failed')),
       };
 
       // Should not throw even if cleanup fails

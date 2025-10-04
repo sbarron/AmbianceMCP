@@ -863,7 +863,11 @@ export class ASTParser {
     if (hasDocstring && hasDocstring.length > 20) return true;
 
     // Always chunk if it's exported or part of a module interface
-    if (signature.includes('export') || nameLower.includes('config') || nameLower.includes('setting')) {
+    if (
+      signature.includes('export') ||
+      nameLower.includes('config') ||
+      nameLower.includes('setting')
+    ) {
       return true;
     }
 
@@ -872,11 +876,33 @@ export class ASTParser {
 
     // Skip common local variable patterns that add little semantic value
     const skipPatterns = [
-      'temp', 'tmp', 'i', 'j', 'k', 'x', 'y', 'z',
-      'val', 'err', 'res', 'req', 'ctx', 'data',
-      'result', 'response', 'item', 'element',
-      'count', 'len', 'length', 'index', 'status',
-      'message', 'output', 'input', 'value'
+      'temp',
+      'tmp',
+      'i',
+      'j',
+      'k',
+      'x',
+      'y',
+      'z',
+      'val',
+      'err',
+      'res',
+      'req',
+      'ctx',
+      'data',
+      'result',
+      'response',
+      'item',
+      'element',
+      'count',
+      'len',
+      'length',
+      'index',
+      'status',
+      'message',
+      'output',
+      'input',
+      'value',
     ];
 
     if (skipPatterns.some(pattern => nameLower.includes(pattern))) {
@@ -894,9 +920,22 @@ export class ASTParser {
     // If we get here, the variable might be worth chunking
     // Be more selective - only chunk variables that are clearly architectural
     const architecturalPatterns = [
-      'config', 'setting', 'manager', 'service', 'handler',
-      'helper', 'util', 'factory', 'builder', 'parser',
-      'store', 'state', 'cache', 'db', 'api', 'client'
+      'config',
+      'setting',
+      'manager',
+      'service',
+      'handler',
+      'helper',
+      'util',
+      'factory',
+      'builder',
+      'parser',
+      'store',
+      'state',
+      'cache',
+      'db',
+      'api',
+      'client',
     ];
 
     // Only chunk if it's clearly an architectural pattern AND not a simple local variable
@@ -904,8 +943,18 @@ export class ASTParser {
 
     // Additional check: don't chunk if it looks like a simple local variable
     const simpleLocalPatterns = [
-      'temp', 'tmp', 'data', 'result', 'response', 'item',
-      'count', 'index', 'len', 'length', 'err', 'val'
+      'temp',
+      'tmp',
+      'data',
+      'result',
+      'response',
+      'item',
+      'count',
+      'index',
+      'len',
+      'length',
+      'err',
+      'val',
     ];
 
     const isSimpleLocal = simpleLocalPatterns.some(pattern => nameLower.includes(pattern));

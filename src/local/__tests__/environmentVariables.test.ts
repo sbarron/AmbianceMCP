@@ -18,16 +18,17 @@ jest.mock('sqlite3', () => ({
       get: jest.fn().mockImplementation((params, callback) => callback(null, null)),
       finalize: jest.fn(),
     }),
-    close: jest.fn().mockImplementation((callback) => callback(null)),
+    close: jest.fn().mockImplementation(callback => callback(null)),
   })),
 }));
 
 // Mock dependencies
 jest.mock('@xenova/transformers', () => ({
   pipeline: jest.fn().mockResolvedValue({
-    mockImplementation: (texts: string[]) => Promise.resolve({
-      data: new Float32Array(texts.length * 768).fill(0.1), // Mock 768-dim embeddings
-    }),
+    mockImplementation: (texts: string[]) =>
+      Promise.resolve({
+        data: new Float32Array(texts.length * 768).fill(0.1), // Mock 768-dim embeddings
+      }),
   }),
 }));
 
@@ -57,26 +58,28 @@ describe('Environment Variable Integration', () => {
     test.each([
       ['all-MiniLM-L6-v2', 'all-MiniLM-L6-v2', 384],
       ['all-minilm-l6-v2', 'all-MiniLM-L6-v2', 384], // Case insensitive
-      ['MULTILINGUAL-E5-LARGE', 'multilingual-e5-large', 768],
+      ['MULTILINGUAL-E5-LARGE', 'multilingual-e5-large', 1024],
       ['all-mpnet-base-v2', 'all-mpnet-base-v2', 768],
       ['ADVANCED-NEURAL-DENSE', 'advanced-neural-dense', 768],
-      ['multilingual-e5-large-instruct', 'multilingual-e5-large-instruct', 768],
-    ])('should initialize %s model from LOCAL_EMBEDDING_MODEL=%s', async (envValue, expectedModel, expectedDims) => {
-      process.env.LOCAL_EMBEDDING_MODEL = envValue;
+    ])(
+      'should initialize %s model from LOCAL_EMBEDDING_MODEL=%s',
+      async (envValue, expectedModel, expectedDims) => {
+        process.env.LOCAL_EMBEDDING_MODEL = envValue;
 
-      const provider = getDefaultLocalProvider();
+        const provider = getDefaultLocalProvider();
 
-      expect(logger.info).toHaveBeenCalledWith(
-        '🤖 Local embedding provider initialized from environment variable',
-        expect.objectContaining({
-          model: expectedModel,
-          envVar: envValue,
-        })
-      );
+        expect(logger.info).toHaveBeenCalledWith(
+          '🤖 Local embedding provider initialized from environment variable',
+          expect.objectContaining({
+            model: expectedModel,
+            envVar: envValue,
+          })
+        );
 
-      expect(provider.getModelInfo().name).toBe(expectedModel);
-      expect(provider.getModelInfo().dimensions).toBe(expectedDims);
-    });
+        expect(provider.getModelInfo().name).toBe(expectedModel);
+        expect(provider.getModelInfo().dimensions).toBe(expectedDims);
+      }
+    );
 
     test('should fallback to all-MiniLM-L6-v2 for unknown model', () => {
       process.env.LOCAL_EMBEDDING_MODEL = 'unknown-model-xyz';
@@ -123,7 +126,9 @@ describe('Environment Variable Integration', () => {
       };
 
       // This would normally call the provider
-      expect((generator as any).localProvider.getModelInfo().name).toBe('multilingual-e5-large-instruct');
+      expect((generator as any).localProvider.getModelInfo().name).toBe(
+        'multilingual-e5-large-instruct'
+      );
 
       await generator.dispose();
     });
@@ -154,11 +159,11 @@ describe('Environment Variable Integration', () => {
 
       // Dispose and change environment variable
       await disposeDefaultProvider();
-      process.env.LOCAL_EMBEDDING_MODEL = 'multilingual-e5-large-instruct';
+      process.env.LOCAL_EMBEDDING_MODEL = 'multilingual-e5-large';
 
       const provider2 = getDefaultLocalProvider();
 
-      expect(provider2.getModelInfo().name).toBe('multilingual-e5-large-instruct');
+      expect(provider2.getModelInfo().name).toBe('multilingual-e5-large');
       expect(provider1).not.toBe(provider2);
     });
   });
@@ -166,9 +171,9 @@ describe('Environment Variable Integration', () => {
   describe('Integration with All Supported Models', () => {
     const testCases = [
       { env: 'all-MiniLM-L6-v2', model: 'all-MiniLM-L6-v2', dims: 384 },
-      { env: 'multilingual-e5-large', model: 'multilingual-e5-large', dims: 768 },
+      { env: 'multilingual-e5-large', model: 'multilingual-e5-large', dims: 1024 },
       { env: 'advanced-neural-dense', model: 'advanced-neural-dense', dims: 768 },
-      { env: 'multilingual-e5-large-instruct', model: 'multilingual-e5-large-instruct', dims: 768 },
+      { env: 'all-mpnet-base-v2', model: 'all-mpnet-base-v2', dims: 768 },
     ];
 
     test.each(testCases)(
@@ -209,17 +214,18 @@ describe('Environment Variable Integration', () => {
     });
 
     test('should handle whitespace in environment variable', () => {
-      process.env.LOCAL_EMBEDDING_MODEL = '  MULTILINGUAL-E5-LARGE-INSTRUCT  ';
+      process.env.LOCAL_EMBEDDING_MODEL = '  MULTILINGUAL-E5-LARGE  ';
 
       const provider = getDefaultLocalProvider();
 
-      expect(provider.getModelInfo().name).toBe('multilingual-e5-large-instruct');
+      expect(provider.getModelInfo().name).toBe('multilingual-e5-large');
+      expect(provider.getModelInfo().dimensions).toBe(1024);
     });
   });
 
   describe('Performance and Memory', () => {
     test('should reuse provider instances for same environment variable', () => {
-      process.env.LOCAL_EMBEDDING_MODEL = 'multilingual-e5-large-instruct';
+      process.env.LOCAL_EMBEDDING_MODEL = 'multilingual-e5-large';
 
       const provider1 = getDefaultLocalProvider();
       const provider2 = getDefaultLocalProvider();

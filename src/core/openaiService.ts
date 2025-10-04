@@ -341,7 +341,7 @@ export class OpenAIService {
 
     if (Array.isArray(content)) {
       const parts = content
-        .map((part) => {
+        .map(part => {
           if (typeof part === 'string') {
             return { type: 'input_text', text: part };
           }
@@ -407,7 +407,7 @@ export class OpenAIService {
   private transformMessagesToResponseInput(
     messages: ChatCompletionMessageParam[]
   ): Array<Record<string, any>> {
-    return messages.map((message) => {
+    return messages.map(message => {
       const converted: Record<string, any> = {
         role: (message as any).role,
         content: this.normalizeResponseContent(message.content ?? ''),
@@ -467,7 +467,7 @@ export class OpenAIService {
     ];
 
     const firstDefined = candidateValues.find(
-      (value) => typeof value === 'number' && Number.isFinite(value)
+      value => typeof value === 'number' && Number.isFinite(value)
     ) as number | undefined;
 
     if (firstDefined === undefined) {
@@ -513,16 +513,17 @@ export class OpenAIService {
       }
     }
 
-    const aggregatedText = typeof (response as any).output_text === 'string'
-      ? (response as any).output_text
-      : textSegments.join('');
+    const aggregatedText =
+      typeof (response as any).output_text === 'string'
+        ? (response as any).output_text
+        : textSegments.join('');
 
     const responseStatus = (response as any).status;
     const incompleteReason = (response as any).incomplete_details?.reason;
 
     const originalFinishReason =
-      outputItems.find((item) => item?.stop_reason)?.stop_reason ||
-      outputItems.find((item) => item?.finish_reason)?.finish_reason ||
+      outputItems.find(item => item?.stop_reason)?.stop_reason ||
+      outputItems.find(item => item?.finish_reason)?.finish_reason ||
       null;
 
     let finishReason = originalFinishReason || 'stop';
@@ -583,14 +584,13 @@ export class OpenAIService {
           },
         },
       ],
-      usage:
-        (response as any).usage
-          ? {
-              prompt_tokens: promptTokens,
-              completion_tokens: completionTokens,
-              total_tokens: totalTokens,
-            }
-          : undefined,
+      usage: (response as any).usage
+        ? {
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: totalTokens,
+          }
+        : undefined,
     };
 
     (completion as any).response_metadata = {
@@ -788,16 +788,15 @@ export class OpenAIService {
 
       if (truncatedResult) {
         metadata.need_more_budget = true;
-        metadata.partial_response =
-          completion.choices?.[0]?.message?.content ?? '';
+        metadata.partial_response = completion.choices?.[0]?.message?.content ?? '';
 
-        if (lastRequestMaxOutputTokens && lastRequestMaxOutputTokens < runtimeModelConfig.maxTokensLimit) {
+        if (
+          lastRequestMaxOutputTokens &&
+          lastRequestMaxOutputTokens < runtimeModelConfig.maxTokensLimit
+        ) {
           const suggested = Math.min(
             runtimeModelConfig.maxTokensLimit,
-            Math.max(
-              lastRequestMaxOutputTokens + 512,
-              Math.ceil(lastRequestMaxOutputTokens * 1.5)
-            )
+            Math.max(lastRequestMaxOutputTokens + 512, Math.ceil(lastRequestMaxOutputTokens * 1.5))
           );
           metadata.suggested_max_output_tokens = suggested;
         }
@@ -961,7 +960,7 @@ export class OpenAIService {
         usage: 'usage' in response ? response.usage : undefined,
       });
 
-      const truncatedChoices = response.choices.filter((choice) => choice.finish_reason === 'length');
+      const truncatedChoices = response.choices.filter(choice => choice.finish_reason === 'length');
 
       if (truncatedChoices.length > 0) {
         const usedMaxTokens = (normalizedParams as any).max_tokens ?? null;
@@ -985,7 +984,7 @@ export class OpenAIService {
         metadata.status = metadata.status ?? 'completed';
         metadata.truncated = true;
         metadata.incomplete_reason = 'max_tokens';
-        metadata.original_finish_reasons = response.choices.map((choice) => choice.finish_reason);
+        metadata.original_finish_reasons = response.choices.map(choice => choice.finish_reason);
         metadata.need_more_budget = true;
         metadata.partial_response = response.choices[0]?.message?.content ?? '';
         metadata.used_max_tokens = usedMaxTokens;
@@ -1022,13 +1021,10 @@ export class OpenAIService {
 
     try {
       if (wantsReasoningModel) {
-        logger.info(
-          'Routing reasoning-capable model through Responses API (stream fallback)',
-          {
-            provider: this.providerConfig.name,
-            model: targetModel,
-          }
-        );
+        logger.info('Routing reasoning-capable model through Responses API (stream fallback)', {
+          provider: this.providerConfig.name,
+          model: targetModel,
+        });
       } else {
         logger.info('Creating streaming chat completion', {
           provider: this.providerConfig.name,
@@ -1057,7 +1053,7 @@ export class OpenAIService {
             `INSUFFICIENT_CONTEXT: ${validationError.message}. ${validationError.structured.suggestion || ''}`
           );
         }
-          throw validationError;
+        throw validationError;
       }
 
       if (wantsReasoningModel) {

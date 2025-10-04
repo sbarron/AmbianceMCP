@@ -47,8 +47,10 @@ class FileWatcher {
       this.watchers.delete(projectPath);
 
       // Clear any pending debounce timers for files in this project
+      const normalizedProjectPath = path.resolve(projectPath);
       for (const [filePath, timer] of this.debounceTimers.entries()) {
-        if (filePath.startsWith(projectPath)) {
+        const normalizedFilePath = path.resolve(filePath);
+        if (normalizedFilePath.startsWith(normalizedProjectPath)) {
           clearTimeout(timer);
           this.debounceTimers.delete(filePath);
         }
@@ -87,6 +89,8 @@ class FileWatcher {
           await this.onFileChange(filePath);
         } catch (error) {
           console.error('Error handling file change:', error);
+          // Ensure the error is properly propagated for testing
+          throw error;
         }
       }
     }, 500); // 500ms debounce
@@ -95,17 +99,27 @@ class FileWatcher {
   }
 
   private shouldIgnoreFile(filePath: string, ignorePatterns: string[]): boolean {
-    // Simple pattern matching for testing
+    const filename = path.basename(filePath);
+
     return ignorePatterns.some(pattern => {
       if (pattern.includes('**')) {
-        const simplePattern = pattern.replace('/**', '');
+        // Handle directory patterns like 'node_modules/**'
+        const simplePattern = pattern.replace('/**', '').replace('**', '');
         return filePath.includes(simplePattern);
       }
       if (pattern.startsWith('*.')) {
+        // Handle extension patterns like '*.min.js'
         const extension = pattern.slice(2);
-        return filePath.endsWith(extension);
+        return filename.endsWith(`.${extension}`);
       }
-      return filePath.includes(pattern);
+      if (pattern.includes('*')) {
+        // Handle patterns like 'test*.tmp'
+        const regexPattern = pattern.replace(/\*/g, '.*');
+        const regex = new RegExp(`^${regexPattern}$`);
+        return regex.test(filename);
+      }
+      // Handle exact matches or directory names
+      return filePath.includes(pattern) || filename === pattern;
     });
   }
 
@@ -147,12 +161,14 @@ describe('File Watching Functionality', () => {
     capturedHandler = null;
 
     // Mock fs.watch to return our controlled watcher and capture the handler
-    jest.spyOn(mockFs, 'watch').mockImplementation((filename: any, options: any, listener?: any) => {
-      if (listener) {
-        capturedHandler = listener;
-      }
-      return mockWatcher as any;
-    });
+    jest
+      .spyOn(mockFs, 'watch')
+      .mockImplementation((filename: any, options: any, listener?: any) => {
+        if (listener) {
+          capturedHandler = listener;
+        }
+        return mockWatcher as any;
+      });
 
     // Mock fs.statSync
     jest.spyOn(mockFs, 'statSync').mockReturnValue({
@@ -337,22 +353,49 @@ describe('File Watching Functionality', () => {
     });
 
     it('should handle errors in file change callback', async () => {
-      onFileChangeMock.mockRejectedValue(new Error('Processing failed'));
+      // Create a new file watcher with a callback that throws
+      const errorFileWatcher = new FileWatcher(async () => {
+        throw new Error('Processing failed');
+      });
+
+      // Mock fs.watch to capture the handler
+      let capturedErrorHandler: ((eventType: string, filename: string | null) => void) | null =
+        null;
+      const originalWatch = mockFs.watch;
+      mockFs.watch.mockImplementation(
+        (
+          filename: any,
+          options: any,
+          listener?: (eventType: string, filename: string | null) => void
+        ) => {
+          if (listener) {
+            capturedErrorHandler = listener;
+          }
+          return mockWatcher as any;
+        }
+      );
+
+      await errorFileWatcher.startWatching('/test/project');
 
       const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
-      if (capturedHandler) {
-        capturedHandler('change', 'src/index.ts');
+      // Trigger a file change through the captured handler
+      if (capturedErrorHandler) {
+        capturedErrorHandler('change', 'src/index.ts');
       }
+
+      // Advance timers to trigger the callback
       jest.advanceTimersByTime(600);
 
-      // Wait for async error handling with longer timeout
-      await new Promise(resolve => setTimeout(resolve, 10));
-
+      // The error should be logged
       expect(consoleSpy).toHaveBeenCalledWith('Error handling file change:', expect.any(Error));
 
       consoleSpy.mockRestore();
-    }, 10000); // Increase timeout for this specific test
+      await errorFileWatcher.stopWatching('/test/project');
+
+      // Restore the original mock
+      mockFs.watch = originalWatch;
+    });
 
     it('should reset debounce timer for subsequent changes to same file', () => {
       // First change

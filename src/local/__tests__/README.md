@@ -41,8 +41,7 @@ The tests cover all supported embedding models:
 | Model | Dimensions | Environment Variable |
 |-------|------------|---------------------|
 | `all-MiniLM-L6-v2` | 384 | `all-MiniLM-L6-v2` |
-| `multilingual-e5-large` | 768 | `multilingual-e5-large` |
-| `multilingual-e5-large-instruct` | 768 | `multilingual-e5-large-instruct` |
+| `multilingual-e5-large` | 1024 | `multilingual-e5-large` |
 | `advanced-neural-dense` | 768 | `advanced-neural-dense` |
 | `all-mpnet-base-v2` | 768 | `all-mpnet-base-v2` |
 
@@ -88,14 +87,13 @@ node scripts/test-embeddings.js env
 ### LOCAL_EMBEDDING_MODEL
 Set the embedding model to use for testing:
 ```bash
-export LOCAL_EMBEDDING_MODEL=multilingual-e5-large-instruct
+export LOCAL_EMBEDDING_MODEL=multilingual-e5-large
 npm run test:embeddings
 ```
 
 Supported values:
 - `all-MiniLM-L6-v2` (default)
 - `multilingual-e5-large`
-- `multilingual-e5-large-instruct`
 - `advanced-neural-dense`
 - `all-mpnet-base-v2`
 

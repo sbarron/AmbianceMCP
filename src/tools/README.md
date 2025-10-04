@@ -53,10 +53,10 @@ export const localHandlers = {
   local_context: handleSemanticCompact,
   local_project_hints: handleProjectHints,
   local_file_summary: handleFileSummary,
-  workspace_config: handleWorkspaceConfig,
   frontend_insights: handleFrontendInsights,
   local_debug_context: handleLocalDebugContext,
   manage_embeddings: handleManageEmbeddings,
+  ast_grep_search: handleAstGrep,
 };
 ```
 
@@ -98,13 +98,12 @@ export const cloudToolHandlers = {
 ### Tool Catalog
 
 - Local tools (`src/tools/localTools`)
-  - `local_context` (semanticCompact): Enhanced local context with AST‑grep, deterministic AnswerDraft, JumpTargets, MiniBundle, NextActions. Optional embeddings.
+  - `local_context` (semanticCompact): Enhanced local context with AST‑grep, deterministic AnswerDraft, JumpTargets, MiniBundle, NextActions. Optional embeddings (auto-generated on first use).
   - `local_project_hints` (projectHints): Project navigation and architecture hints; supports `enhanced` format for capabilities/risks/next actions.
   - `local_file_summary` (fileSummary): Fast AST‑based file analysis with symbol extraction and complexity.
-  - `workspace_config` (workspaceConfig): Detect and validate workspace paths/config.
+  - `manage_embeddings` (embeddingManagement): **Workspace & embedding management** - workspace configuration (get/set/validate), embedding status, health checks, migration, validation, and project maintenance. Replaces deprecated `workspace_config`.
   - `frontend_insights` (frontendInsights): Component/route/state/perf/accessibility insights for React frontends.
   - `local_debug_context` (debug/localDebugContext): Local debug bundle (errors, symbols, search matches).
-  - `manage_embeddings` (embeddingManagement): Single entry point for embedding status, health checks, migration, validation, and project maintenance.
   - `ast_grep_search` (localTools/astGrep): Structural code search (AST-based). Pattern is code-like, not regex. Use $UPPERCASE metavariables.
 
 - OpenAI‑compatible tools (`src/tools/aiTools`)
@@ -199,11 +198,12 @@ Use `getAvailableTools(mode)` from `src/tools/index.ts` to select tool sets base
 
 ### Notes and Best Practices
 
-- Local tools favor deterministic AST/static strategies first; embeddings are optional and auto‑fallbacks avoid external calls by default.
-- `ast_grep_search` patterns are structural; avoid regex features like '|', '.*', or '/.../'. On Windows, we already avoid shell parsing, so characters won’t be misinterpreted, but regex‑style patterns will still be rejected with a helpful error.
-- When using embeddings locally, call `manage_embeddings` with actions like `status`, `validate`, or `migrate` after changing models.
-- For this project, prefer routing embedding/LLM calls through Ambiance server APIs when enabled.
-- GitHub cloud tools do not write local files; they consume Ambiance’s indexed data for privacy/security.
+- **Embedding Behavior**: Local tools favor deterministic AST/static strategies first; embeddings are **automatically generated in background on first tool use** (non-blocking). File changes trigger incremental updates via 3-minute debounced watching.
+- **Workspace Setup**: Use `manage_embeddings` with actions `get_workspace`, `set_workspace`, or `validate_workspace` for workspace configuration (replaces deprecated `workspace_config`).
+- **AST-Grep Patterns**: Patterns are structural; avoid regex features like '|', '.*', or '/.../'. On Windows, we already avoid shell parsing, so characters won't be misinterpreted, but regex‑style patterns will still be rejected with a helpful error.
+- **Model Changes**: When using embeddings locally and changing models, call `manage_embeddings` with actions like `status`, `validate`, or `migrate`.
+- **API Routing**: For this project, prefer routing embedding/LLM calls through Ambiance server APIs when enabled.
+- **GitHub Privacy**: GitHub cloud tools do not write local files; they consume Ambiance's indexed data for privacy/security.
 
 ### Maintenance
 
