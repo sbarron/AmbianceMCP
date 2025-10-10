@@ -12,3 +12,4 @@ func main() {
     result := myFunc("World")
     fmt.Println(result)
 }
+

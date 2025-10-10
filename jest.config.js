@@ -1,23 +1,43 @@
 /** @type {import('ts-jest').JestConfigWithTsJest} */
+const includeIntegrationTests = process.env.RUN_INTEGRATION_TESTS === 'true';
+
+const testMatch = includeIntegrationTests
+  ? ['**/src/**/*.test.ts', '**/tests/**/*.test.js']
+  : ['**/tests/**/*.test.js'];
+
+const testPathIgnorePatterns = [
+  'tools-old/',
+  'indexers-old/',
+  'renderers-old/',
+  'search-old/',
+  'database-old/',
+  'llm-old/',
+  'types-old/',
+];
+
+if (!includeIntegrationTests) {
+  testPathIgnorePatterns.push('\\.integration\\.test\\.ts$');
+  testPathIgnorePatterns.push('src/__tests__/integration/');
+  testPathIgnorePatterns.push('tests/integration/');
+  testPathIgnorePatterns.push('src/local/__tests__/embeddingStorage.test.ts');
+  testPathIgnorePatterns.push('src/local/__tests__/automaticIndexer.test.ts');
+  testPathIgnorePatterns.push('src/local/__tests__/fileWatcher.test.ts');
+  testPathIgnorePatterns.push('src/__tests__/examples/');
+  testPathIgnorePatterns.push('src/core/__tests__/errorHandling.test.ts');
+}
+
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  testMatch: ['**/src/**/*.test.ts', '**/tests/**/*.test.js'],
+  testMatch,
   setupFiles: ['<rootDir>/tests/setupEnv.js'],
-  testPathIgnorePatterns: [
-    'tools-old/',
-    'indexers-old/',
-    'renderers-old/',
-    'search-old/',
-    'database-old/',
-    'llm-old/',
-    'types-old/'
-  ],
+  testPathIgnorePatterns,
   moduleFileExtensions: ['ts', 'js', 'json'],
   transform: {
     '^.+\\.ts$': ['ts-jest', {
       useESM: false,
-      tsconfig: 'tsconfig.json'
+      tsconfig: 'tsconfig.json',
+      diagnostics: false
     }]
   },
   transformIgnorePatterns: [

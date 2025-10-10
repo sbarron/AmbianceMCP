@@ -15,7 +15,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { Database, Statement } from 'sqlite3';
+import Database from 'better-sqlite3';
 import { logger } from '../utils/logger';
 
 import {
@@ -115,7 +115,7 @@ export const SCHEMA_VERSIONS = {
 };
 
 export class LocalEmbeddingStorage {
-  private db: Database | null = null;
+  private db: Database.Database | null = null;
   private dbPath: string;
   private initialized = false;
   private enableQuantization: boolean;
@@ -126,20 +126,20 @@ export class LocalEmbeddingStorage {
   private enableQuotas: boolean;
 
   // Prepared statements for performance
-  private insertStmt: Statement | null = null;
-  private insertProjectStmt: Statement | null = null;
-  private getProjectStmt: Statement | null = null;
-  private getProjectByPathStmt: Statement | null = null;
-  private updateProjectLastIndexedStmt: Statement | null = null;
-  private updateStmt: Statement | null = null;
-  private searchStmt: Statement | null = null;
-  private projectStmt: Statement | null = null;
+  private insertStmt: Database.Statement | null = null;
+  private insertProjectStmt: Database.Statement | null = null;
+  private getProjectStmt: Database.Statement | null = null;
+  private getProjectByPathStmt: Database.Statement | null = null;
+  private updateProjectLastIndexedStmt: Database.Statement | null = null;
+  private updateStmt: Database.Statement | null = null;
+  private searchStmt: Database.Statement | null = null;
+  private projectStmt: Database.Statement | null = null;
 
   // File management statements
-  private insertFileStmt: Statement | null = null;
-  private updateFileStmt: Statement | null = null;
-  private getFileStmt: Statement | null = null;
-  private listProjectFilesStmt: Statement | null = null;
+  private insertFileStmt: Database.Statement | null = null;
+  private updateFileStmt: Database.Statement | null = null;
+  private getFileStmt: Database.Statement | null = null;
+  private listProjectFilesStmt: Database.Statement | null = null;
 
   constructor(customPath?: string, enableQuantization?: boolean) {
     // Use custom path or default to ~/.ambiance/embeddings.db
@@ -182,132 +182,98 @@ export class LocalEmbeddingStorage {
   async initializeDatabase(): Promise<void> {
     if (this.initialized) return;
 
-    return new Promise((resolve, reject) => {
+    try {
       // Ensure directory exists
       const dbDir = path.dirname(this.dbPath);
       if (!fs.existsSync(dbDir)) {
         fs.mkdirSync(dbDir, { recursive: true });
       }
 
-      this.db = new Database(this.dbPath, err => {
-        if (err) {
-          logger.error('❌ Failed to open SQLite database', {
-            error: err.message,
-            path: this.dbPath,
-          });
-          reject(err);
-          return;
-        }
+      this.db = new Database(this.dbPath);
+      logger.info('✅ SQLite database opened', { path: this.dbPath });
 
-        logger.info('✅ SQLite database opened', { path: this.dbPath });
-        this.createTables()
-          .then(() => {
-            this.prepareStatements();
-            this.initialized = true;
-            resolve();
-          })
-          .catch(reject);
+      await this.createTables();
+      this.prepareStatements();
+      this.initialized = true;
+    } catch (err) {
+      logger.error('❌ Failed to open SQLite database', {
+        error: err instanceof Error ? err.message : String(err),
+        path: this.dbPath,
       });
-    });
+      throw err;
+    }
   }
 
   /**
    * Create database tables for embedding storage
    */
-  private createTables(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+  private async createTables(): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
+    try {
       // Check current schema version
-      this.db.get(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'",
-        (err, row) => {
-          if (err) {
-            reject(err);
-            return;
-          }
+      const schemaVersionRow = this.db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
+        .get();
 
-          if (!row) {
-            // No schema_version table = old database or new database
-            // Check if embeddings table exists (old database)
-            this.db!.get(
-              "SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings'",
-              (embErr, embRow) => {
-                if (embErr) {
-                  reject(embErr);
-                  return;
-                }
+      if (!schemaVersionRow) {
+        // No schema_version table = old database or new database
+        // Check if embeddings table exists (old database)
+        const embeddingsRow = this.db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings'")
+          .get();
 
-                if (embRow) {
-                  // Old database exists - FORCE MIGRATION
-                  this.forceSchemaUpgrade()
-                    .then(() => {
-                      logger.info('✅ Database schema upgraded successfully');
-                      resolve();
-                    })
-                    .catch(reject);
-                } else {
-                  // New database - create fresh schema
-                  this.createNewTables()
-                    .then(() => this.setSchemaVersion(CURRENT_SCHEMA_VERSION))
-                    .then(() => {
-                      logger.info('✅ Database schema is up to date');
-                      resolve();
-                    })
-                    .catch(reject);
-                }
-              }
-            );
-          } else {
-            // Schema version table exists - check version
-            this.db!.get(
-              'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
-              (verErr, verRow: any) => {
-                if (verErr) {
-                  reject(verErr);
-                  return;
-                }
-
-                const currentVersion = verRow?.version || 0;
-
-                if (currentVersion < CURRENT_SCHEMA_VERSION) {
-                  // Outdated schema - FORCE MIGRATION
-                  logger.warn('⚠️ Database schema is outdated', {
-                    current: currentVersion,
-                    required: CURRENT_SCHEMA_VERSION,
-                  });
-
-                  this.forceSchemaUpgrade()
-                    .then(() => {
-                      logger.info('✅ Database schema upgraded successfully');
-                      resolve();
-                    })
-                    .catch(reject);
-                } else if (currentVersion > CURRENT_SCHEMA_VERSION) {
-                  // Future schema version - cannot handle
-                  const error = new Error(
-                    `Database schema version ${currentVersion} is newer than supported version ${CURRENT_SCHEMA_VERSION}. ` +
-                      `Please upgrade the Ambiance MCP package.`
-                  );
-                  logger.error('❌ Database schema too new', {
-                    dbVersion: currentVersion,
-                    supportedVersion: CURRENT_SCHEMA_VERSION,
-                  });
-                  reject(error);
-                } else {
-                  // Schema is up to date
-                  logger.info('✅ Database schema is up to date');
-                  resolve();
-                }
-              }
-            );
-          }
+        if (embeddingsRow) {
+          // Old database exists - FORCE MIGRATION
+          await this.forceSchemaUpgrade();
+          logger.info('✅ Database schema upgraded successfully');
+        } else {
+          // New database - create fresh schema
+          await this.createNewTables();
+          await this.setSchemaVersion(CURRENT_SCHEMA_VERSION);
+          logger.info('✅ Database schema is up to date');
         }
-      );
-    });
+      } else {
+        // Schema version table exists - check version
+        const versionRow = this.db
+          .prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1')
+          .get() as { version: number } | undefined;
+
+        const currentVersion = versionRow?.version || 0;
+
+        if (currentVersion < CURRENT_SCHEMA_VERSION) {
+          // Outdated schema - FORCE MIGRATION
+          logger.warn('⚠️ Database schema is outdated', {
+            current: currentVersion,
+            required: CURRENT_SCHEMA_VERSION,
+          });
+
+          await this.forceSchemaUpgrade();
+          logger.info('✅ Database schema upgraded successfully');
+        } else if (currentVersion > CURRENT_SCHEMA_VERSION) {
+          // Future schema version - cannot handle
+          const error = new Error(
+            `Database schema version ${currentVersion} is newer than supported version ${CURRENT_SCHEMA_VERSION}. ` +
+              `Please upgrade the Ambiance MCP package.`
+          );
+          logger.error('❌ Database schema too new', {
+            dbVersion: currentVersion,
+            supportedVersion: CURRENT_SCHEMA_VERSION,
+          });
+          throw error;
+        } else {
+          // Schema is up to date
+          logger.info('✅ Database schema is up to date');
+        }
+      }
+    } catch (err) {
+      logger.error('❌ Failed to create database tables', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
   }
 
   /**
@@ -325,12 +291,9 @@ export class LocalEmbeddingStorage {
 
     try {
       // Close current database connection
-      await new Promise<void>((resolve, reject) => {
-        this.db!.close(err => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
+      if (this.db) {
+        this.db.close();
+      }
 
       // Backup the old database file
       if (fs.existsSync(this.dbPath)) {
@@ -345,15 +308,11 @@ export class LocalEmbeddingStorage {
       }
 
       // Reopen database (creates new empty file)
-      await new Promise<void>((resolve, reject) => {
-        this.db = new Database(this.dbPath, err => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          resolve();
-        });
-      });
+      try {
+        this.db = new Database(this.dbPath);
+      } catch (err) {
+        throw err;
+      }
 
       // Create new schema
       await this.createNewTables();
@@ -386,159 +345,148 @@ export class LocalEmbeddingStorage {
   /**
    * Set the schema version in the database
    */
-  private setSchemaVersion(version: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+  private async setSchemaVersion(version: number): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
+    try {
       const description =
         SCHEMA_VERSIONS[version as keyof typeof SCHEMA_VERSIONS] || 'Unknown version';
 
-      this.db.run(
-        'INSERT OR REPLACE INTO schema_version (version, description) VALUES (?, ?)',
-        [version, description],
-        err => {
-          if (err) {
-            logger.error('❌ Failed to set schema version', {
-              error: err.message,
-              version,
-            });
-            reject(err);
-          } else {
-            logger.info('✅ Schema version set', { version, description });
-            resolve();
-          }
-        }
-      );
-    });
+      this.db
+        .prepare('INSERT OR REPLACE INTO schema_version (version, description) VALUES (?, ?)')
+        .run(version, description);
+
+      logger.info('✅ Schema version set', { version, description });
+    } catch (err) {
+      logger.error('❌ Failed to set schema version', {
+        error: err instanceof Error ? err.message : String(err),
+        version,
+      });
+      throw err;
+    }
   }
 
   /**
    * Migrate database schema if needed (DEPRECATED - use forceSchemaUpgrade instead)
    * @deprecated
    */
-  private migrateDatabaseIfNeeded(hasOldSchema: boolean): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+  private async migrateDatabaseIfNeeded(hasOldSchema: boolean): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
-      let migrationSQL = '';
+    let migrationSQL = '';
 
-      if (hasOldSchema) {
-        // Check if files table exists
-        this.db.get(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='files'",
-          (err, row) => {
-            if (err) {
-              reject(err);
-              return;
-            }
+    if (hasOldSchema) {
+      // Check if files table exists
+      try {
+        const row = this.db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='files'")
+          .get() as any;
 
-            if (!row) {
-              // Need to add files table and migrate existing data
-              migrationSQL = `
-              -- Create files table for file metadata tracking (similar to online database)
-              CREATE TABLE files (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                path TEXT NOT NULL,
-                hash TEXT NOT NULL,
-                last_modified DATETIME NOT NULL,
-                file_size INTEGER NOT NULL,
-                language TEXT,
-                line_count INTEGER,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-              );
+        if (!row) {
+          // Need to add files table and migrate existing data
+          migrationSQL = `
+            -- Create files table for file metadata tracking (similar to online database)
+            CREATE TABLE files (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL,
+              path TEXT NOT NULL,
+              hash TEXT NOT NULL,
+              last_modified DATETIME NOT NULL,
+              file_size INTEGER NOT NULL,
+              language TEXT,
+              line_count INTEGER,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
 
-              CREATE INDEX idx_files_project_id ON files(project_id);
-              CREATE INDEX idx_files_path ON files(path);
-              CREATE INDEX idx_files_hash ON files(hash);
+            CREATE INDEX idx_files_project_id ON files(project_id);
+            CREATE INDEX idx_files_path ON files(path);
+            CREATE INDEX idx_files_hash ON files(hash);
 
-              -- Add file_id column to embeddings table
-              ALTER TABLE embeddings ADD COLUMN file_id TEXT;
-              ALTER TABLE embeddings ADD COLUMN file_path TEXT;
+            -- Add file_id column to embeddings table
+            ALTER TABLE embeddings ADD COLUMN file_id TEXT;
+            ALTER TABLE embeddings ADD COLUMN file_path TEXT;
 
-              -- Migrate existing data - create file entries and update embeddings
-              INSERT INTO files (id, project_id, path, hash, last_modified, file_size, language, line_count, created_at, updated_at)
-              SELECT
-                LOWER(HEX(RANDOM())) as id,
+            -- Migrate existing data - create file entries and update embeddings
+            INSERT INTO files (id, project_id, path, hash, last_modified, file_size, language, line_count, created_at, updated_at)
+            SELECT
+              LOWER(HEX(RANDOM())) as id,
+              project_id,
+              file_path,
+              hash,
+              DATETIME('now') as last_modified,
+              0 as file_size,
+              metadata_language,
+              0 as line_count,
+              created_at,
+              updated_at
+            FROM (
+              SELECT DISTINCT
                 project_id,
                 file_path,
                 hash,
-                DATETIME('now') as last_modified,
-                0 as file_size,
                 metadata_language,
-                0 as line_count,
                 created_at,
                 updated_at
-              FROM (
-                SELECT DISTINCT
-                  project_id,
-                  file_path,
-                  hash,
-                  metadata_language,
-                  created_at,
-                  updated_at
-                FROM embeddings
-              );
+              FROM embeddings
+            );
 
-              -- Update embeddings with file_id references
-              UPDATE embeddings
-              SET file_id = (
-                SELECT id FROM files
-                WHERE files.project_id = embeddings.project_id
-                AND files.path = embeddings.file_path
-                AND files.hash = embeddings.hash
-                LIMIT 1
-              ),
-              file_path = embeddings.file_path
-              WHERE file_id IS NULL;
+            -- Update embeddings with file_id references
+            UPDATE embeddings
+            SET file_id = (
+              SELECT id FROM files
+              WHERE files.project_id = embeddings.project_id
+              AND files.path = embeddings.file_path
+              AND files.hash = embeddings.hash
+              LIMIT 1
+            ),
+            file_path = embeddings.file_path
+            WHERE file_id IS NULL;
 
-              -- Add foreign key constraint (SQLite doesn't support adding FK constraints to existing tables easily)
-              -- We'll handle this in application logic instead
-            `;
-            }
+            -- Add foreign key constraint (SQLite doesn't support adding FK constraints to existing tables easily)
+            -- We'll handle this in application logic instead
+          `;
+        }
 
-            // Execute migration if needed
-            if (migrationSQL) {
-              logger.info('🔄 Migrating database schema for improved file tracking...');
-              this.db!.exec(migrationSQL, err => {
-                if (err) {
-                  logger.error('❌ Database migration failed', { error: err.message });
-                  reject(err);
-                } else {
-                  logger.info('✅ Database migration completed successfully');
-                  this.createNewTables().then(resolve).catch(reject);
-                }
-              });
-            } else {
-              // No migration needed, just ensure new tables exist
-              this.createNewTables().then(resolve).catch(reject);
-            }
+        // Execute migration if needed
+        if (migrationSQL) {
+          logger.info('🔄 Migrating database schema for improved file tracking...');
+          try {
+            this.db!.exec(migrationSQL);
+            logger.info('✅ Database migration completed successfully');
+            await this.createNewTables();
+          } catch (err) {
+            logger.error('❌ Database migration failed', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            throw err;
           }
-        );
-      } else {
-        // Fresh database, create all tables
-        this.createNewTables().then(resolve).catch(reject);
+        } else {
+          // No migration needed, just ensure new tables exist
+          await this.createNewTables();
+        }
+      } catch (err) {
+        throw err;
       }
-    });
+    } else {
+      // Fresh database, create all tables
+      await this.createNewTables();
+    }
   }
 
   /**
    * Create new tables (called after migration or for fresh databases)
    */
-  private createNewTables(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+  private async createNewTables(): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
+    try {
       const createTableSQL = `
         -- Schema version tracking table
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -645,16 +593,14 @@ export class LocalEmbeddingStorage {
         );
       `;
 
-      this.db.exec(createTableSQL, err => {
-        if (err) {
-          logger.error('❌ Failed to create database tables', { error: err.message });
-          reject(err);
-        } else {
-          logger.info('✅ Database tables created successfully');
-          resolve();
-        }
+      this.db.exec(createTableSQL);
+      logger.info('✅ Database tables created successfully');
+    } catch (err) {
+      logger.error('❌ Failed to create database tables', {
+        error: err instanceof Error ? err.message : String(err),
       });
-    });
+      throw err;
+    }
   }
 
   /**
@@ -769,7 +715,7 @@ export class LocalEmbeddingStorage {
       });
     }
 
-    return new Promise((resolve, reject) => {
+    try {
       // Prepare embedding for storage (quantize if enabled)
       let embeddingToStore: number[] | QuantizedEmbedding;
       let embeddingFormat: 'float32' | 'int8' = 'float32';
@@ -813,53 +759,48 @@ export class LocalEmbeddingStorage {
       const symbolsJson = chunk.metadata.symbols ? JSON.stringify(chunk.metadata.symbols) : null;
 
       this.insertStmt!.run(
-        [
-          chunk.id,
-          chunk.projectId,
-          chunk.fileId,
-          chunk.filePath,
-          chunk.chunkIndex,
-          chunk.content,
-          embeddingBlob,
-          chunk.metadata.type,
-          chunk.metadata.language || null,
-          symbolsJson,
-          chunk.metadata.startLine || null,
-          chunk.metadata.endLine || null,
-          embeddingFormat, // Store the actual format used
-          chunk.metadata.embeddingDimensions || null,
-          chunk.metadata.embeddingProvider || null,
-          chunk.hash,
-        ],
-        err => {
-          if (err) {
-            logger.error('❌ Failed to store embedding', {
-              error: err.message,
-              chunkId: chunk.id,
-              projectId: chunk.projectId,
-              format: embeddingFormat,
-            });
-            reject(err);
-          } else {
-            // Update project stats
-            this.updateStmt!.run([chunk.projectId, chunk.projectId, chunk.projectId], statsErr => {
-              if (statsErr) {
-                logger.warn('⚠️ Failed to update project stats', { error: statsErr.message });
-              }
-            });
-
-            logger.debug('✅ Embedding stored', {
-              chunkId: chunk.id,
-              projectId: chunk.projectId,
-              contentLength: chunk.content.length,
-              format: embeddingFormat,
-              quantized: embeddingFormat === 'int8',
-            });
-            resolve();
-          }
-        }
+        chunk.id,
+        chunk.projectId,
+        chunk.fileId,
+        chunk.filePath,
+        chunk.chunkIndex,
+        chunk.content,
+        embeddingBlob,
+        chunk.metadata.type,
+        chunk.metadata.language || null,
+        symbolsJson,
+        chunk.metadata.startLine || null,
+        chunk.metadata.endLine || null,
+        embeddingFormat, // Store the actual format used
+        chunk.metadata.embeddingDimensions || null,
+        chunk.metadata.embeddingProvider || null,
+        chunk.hash
       );
-    });
+
+      // Update project stats
+      try {
+        this.updateStmt!.run(chunk.projectId, chunk.projectId, chunk.projectId);
+      } catch (statsErr) {
+        logger.warn('⚠️ Failed to update project stats', {
+          error: statsErr instanceof Error ? statsErr.message : String(statsErr),
+        });
+      }
+
+      logger.debug('✅ Embedding stored', {
+        chunkId: chunk.id,
+        projectId: chunk.projectId,
+        contentLength: chunk.content.length,
+        format: embeddingFormat,
+        quantized: embeddingFormat === 'int8',
+      });
+    } catch (err) {
+      logger.error('❌ Failed to store embedding', {
+        error: err instanceof Error ? err.message : String(err),
+        chunkId: chunk.id,
+        projectId: chunk.projectId,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -874,24 +815,21 @@ export class LocalEmbeddingStorage {
       throw new Error('Database statements not prepared');
     }
 
-    return new Promise((resolve, reject) => {
-      this.projectStmt!.all([projectId], (err, rows: any[]) => {
-        if (err) {
-          logger.error('❌ Failed to fetch project embeddings', {
-            error: err.message,
-            projectId,
-          });
-          reject(err);
-        } else {
-          const chunks = rows.map(row => this.rowToChunk(row));
-          logger.debug('📦 Retrieved project embeddings', {
-            projectId,
-            chunkCount: chunks.length,
-          });
-          resolve(chunks);
-        }
+    try {
+      const rows = this.projectStmt!.all(projectId) as any[];
+      const chunks = rows.map(row => this.rowToChunk(row));
+      logger.debug('📦 Retrieved project embeddings', {
+        projectId,
+        chunkCount: chunks.length,
       });
-    });
+      return chunks;
+    } catch (err) {
+      logger.error('❌ Failed to fetch project embeddings', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -902,83 +840,137 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
-      this.db.get(
-        `
+    try {
+      const rows = this.db
+        .prepare(
+          `
         SELECT * FROM embeddings
         WHERE project_id = ? AND file_id = ?
         ORDER BY chunk_index ASC
-      `,
-        [projectId, fileId],
-        (err, rows: any[]) => {
-          if (err) {
-            logger.error('❌ Failed to fetch file embeddings', {
-              error: err.message,
-              projectId,
-              fileId,
-            });
-            reject(err);
-          } else {
-            const chunks = rows.map((row: any) => this.rowToChunk(row));
-            logger.debug('📄 Retrieved file embeddings', {
-              projectId,
-              fileId,
-              chunkCount: chunks.length,
-            });
-            resolve(chunks);
-          }
-        }
-      );
-    });
+      `
+        )
+        .all(projectId, fileId) as any[];
+
+      const chunks = rows.map((row: any) => this.rowToChunk(row));
+      logger.debug('📄 Retrieved file embeddings', {
+        projectId,
+        fileId,
+        chunkCount: chunks.length,
+      });
+      return chunks;
+    } catch (err) {
+      logger.error('❌ Failed to fetch file embeddings', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
+        fileId,
+      });
+      throw err;
+    }
   }
 
   /**
    * Get recent embeddings for a project (for LRU cleanup)
    */
+  /**
+   * Get recently updated files with their latest embedding update times
+   */
+  async getRecentlyUpdatedFiles(
+    projectId: string,
+    limit: number = 50
+  ): Promise<
+    Array<{
+      filePath: string;
+      fileId: string;
+      lastUpdated: string;
+      embeddingCount: number;
+      totalChunks: number;
+    }>
+  > {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      const rows = this.db
+        .prepare(
+          `
+        SELECT
+          f.path as filePath,
+          f.id as fileId,
+          MAX(e.created_at) as lastUpdated,
+          COUNT(e.id) as embeddingCount,
+          COUNT(DISTINCT e.chunk_index) as totalChunks
+        FROM files f
+        LEFT JOIN embeddings e ON f.id = e.file_id
+        WHERE f.project_id = ?
+        GROUP BY f.id, f.path
+        ORDER BY MAX(e.created_at) DESC
+        LIMIT ?
+      `
+        )
+        .all(projectId, limit) as any[];
+
+      return rows.map(row => ({
+        filePath: row.filePath,
+        fileId: row.fileId,
+        lastUpdated: row.lastUpdated,
+        embeddingCount: row.embeddingCount || 0,
+        totalChunks: row.totalChunks || 0,
+      }));
+    } catch (err) {
+      logger.error('❌ Failed to fetch recently updated files', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
+        limit,
+      });
+      throw err;
+    }
+  }
+
   async getRecentEmbeddings(projectId: string, limit: number = 100): Promise<EmbeddingChunk[]> {
     if (!this.initialized) {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
-      this.db.all(
-        `
+    try {
+      const rows = this.db
+        .prepare(
+          `
         SELECT * FROM embeddings
         WHERE project_id = ?
         ORDER BY created_at DESC
         LIMIT ?
-      `,
-        [projectId, limit],
-        (err, rows: any[]) => {
-          if (err) {
-            logger.error('❌ Failed to fetch recent embeddings', {
-              error: err.message,
-              projectId,
-              limit,
-            });
-            reject(err);
-          } else {
-            const chunks = rows.map((row: any) => this.rowToChunk(row));
-            logger.debug('🕒 Retrieved recent embeddings', {
-              projectId,
-              chunkCount: chunks.length,
-              limit,
-            });
-            resolve(chunks);
-          }
-        }
-      );
-    });
+      `
+        )
+        .all(projectId, limit) as any[];
+
+      const chunks = rows.map((row: any) => this.rowToChunk(row));
+      logger.debug('🕒 Retrieved recent embeddings', {
+        projectId,
+        chunkCount: chunks.length,
+        limit,
+      });
+      return chunks;
+    } catch (err) {
+      logger.error('❌ Failed to fetch recent embeddings', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
+        limit,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -992,39 +984,36 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
-      this.db.all(
-        `
+    try {
+      const rows = this.db
+        .prepare(
+          `
         SELECT * FROM embeddings
         WHERE project_id = ? AND metadata_embedding_format = ?
         ORDER BY created_at ASC
-      `,
-        [projectId, format],
-        (err, rows: any[]) => {
-          if (err) {
-            logger.error('❌ Failed to fetch embeddings by format', {
-              error: err.message,
-              projectId,
-              format,
-            });
-            reject(err);
-          } else {
-            const chunks = rows.map((row: any) => this.rowToChunk(row));
-            logger.debug('🔢 Retrieved embeddings by format', {
-              projectId,
-              format,
-              chunkCount: chunks.length,
-            });
-            resolve(chunks);
-          }
-        }
-      );
-    });
+      `
+        )
+        .all(projectId, format) as any[];
+
+      const chunks = rows.map((row: any) => this.rowToChunk(row));
+      logger.debug('🔢 Retrieved embeddings by format', {
+        projectId,
+        format,
+        chunkCount: chunks.length,
+      });
+      return chunks;
+    } catch (err) {
+      logger.error('❌ Failed to fetch embeddings by format', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
+        format,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -1035,39 +1024,36 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
-      this.db.all(
-        `
+    try {
+      const rows = this.db
+        .prepare(
+          `
         SELECT * FROM embeddings
         WHERE project_id = ? AND metadata_language = ?
         ORDER BY created_at ASC
-      `,
-        [projectId, language],
-        (err, rows: any[]) => {
-          if (err) {
-            logger.error('❌ Failed to fetch embeddings by language', {
-              error: err.message,
-              projectId,
-              language,
-            });
-            reject(err);
-          } else {
-            const chunks = rows.map((row: any) => this.rowToChunk(row));
-            logger.debug('🌐 Retrieved embeddings by language', {
-              projectId,
-              language,
-              chunkCount: chunks.length,
-            });
-            resolve(chunks);
-          }
-        }
-      );
-    });
+      `
+        )
+        .all(projectId, language) as any[];
+
+      const chunks = rows.map((row: any) => this.rowToChunk(row));
+      logger.debug('🌐 Retrieved embeddings by language', {
+        projectId,
+        language,
+        chunkCount: chunks.length,
+      });
+      return chunks;
+    } catch (err) {
+      logger.error('❌ Failed to fetch embeddings by language', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
+        language,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -1082,43 +1068,40 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
+    try {
       // Use SQLite's LIKE for pattern matching (could be enhanced with FTS later)
-      this.db.all(
-        `
+      const rows = this.db
+        .prepare(
+          `
         SELECT * FROM embeddings
         WHERE project_id = ? AND content LIKE ?
         ORDER BY created_at DESC
         LIMIT ?
-      `,
-        [projectId, `%${pattern}%`, limit],
-        (err, rows: any[]) => {
-          if (err) {
-            logger.error('❌ Failed to search embeddings by content', {
-              error: err.message,
-              projectId,
-              pattern,
-              limit,
-            });
-            reject(err);
-          } else {
-            const chunks = rows.map((row: any) => this.rowToChunk(row));
-            logger.debug('🔍 Retrieved embeddings by content search', {
-              projectId,
-              pattern,
-              chunkCount: chunks.length,
-              limit,
-            });
-            resolve(chunks);
-          }
-        }
-      );
-    });
+      `
+        )
+        .all(projectId, `%${pattern}%`, limit) as any[];
+
+      const chunks = rows.map((row: any) => this.rowToChunk(row));
+      logger.debug('🔍 Retrieved embeddings by content search', {
+        projectId,
+        pattern,
+        chunkCount: chunks.length,
+        limit,
+      });
+      return chunks;
+    } catch (err) {
+      logger.error('❌ Failed to search embeddings by content', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
+        pattern,
+        limit,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -1283,37 +1266,30 @@ export class LocalEmbeddingStorage {
       throw new Error('Database statements not prepared');
     }
 
-    return new Promise((resolve, reject) => {
+    try {
       this.insertFileStmt!.run(
-        [
-          metadata.id,
-          metadata.projectId,
-          metadata.path,
-          metadata.hash,
-          metadata.lastModified.toISOString(),
-          metadata.fileSize,
-          metadata.language || null,
-          metadata.lineCount || null,
-        ],
-        err => {
-          if (err) {
-            logger.error('❌ Failed to store file metadata', {
-              error: err.message,
-              fileId: metadata.id,
-              projectId: metadata.projectId,
-            });
-            reject(err);
-          } else {
-            logger.debug('✅ File metadata stored', {
-              fileId: metadata.id,
-              projectId: metadata.projectId,
-              path: metadata.path,
-            });
-            resolve();
-          }
-        }
+        metadata.id,
+        metadata.projectId,
+        metadata.path,
+        metadata.hash,
+        metadata.lastModified.toISOString(),
+        metadata.fileSize,
+        metadata.language || null,
+        metadata.lineCount || null
       );
-    });
+      logger.debug('✅ File metadata stored', {
+        fileId: metadata.id,
+        projectId: metadata.projectId,
+        path: metadata.path,
+      });
+    } catch (err) {
+      logger.error('❌ Failed to store file metadata', {
+        error: err instanceof Error ? err.message : String(err),
+        fileId: metadata.id,
+        projectId: metadata.projectId,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -1328,29 +1304,30 @@ export class LocalEmbeddingStorage {
       throw new Error('Database statements not prepared');
     }
 
-    return new Promise((resolve, reject) => {
-      this.getFileStmt!.get([fileId], (err, row: any) => {
-        if (err) {
-          logger.error('❌ Failed to get file metadata', { error: err.message, fileId });
-          reject(err);
-        } else if (!row) {
-          resolve(null);
-        } else {
-          resolve({
-            id: row.id,
-            projectId: row.project_id,
-            path: row.path,
-            hash: row.hash,
-            lastModified: new Date(row.last_modified),
-            fileSize: row.file_size,
-            language: row.language,
-            lineCount: row.line_count,
-            createdAt: new Date(row.created_at),
-            updatedAt: new Date(row.updated_at),
-          });
-        }
+    try {
+      const row = this.getFileStmt!.get([fileId]) as any;
+      if (!row) {
+        return null;
+      }
+      return {
+        id: row.id,
+        projectId: row.project_id,
+        path: row.path,
+        hash: row.hash,
+        lastModified: new Date(row.last_modified),
+        fileSize: row.file_size,
+        language: row.language,
+        lineCount: row.line_count,
+        createdAt: new Date(row.created_at),
+        updatedAt: new Date(row.updated_at),
+      };
+    } catch (err) {
+      logger.error('❌ Failed to get file metadata', {
+        error: err instanceof Error ? err.message : String(err),
+        fileId,
       });
-    });
+      throw err;
+    }
   }
 
   /**
@@ -1365,28 +1342,28 @@ export class LocalEmbeddingStorage {
       throw new Error('Database statements not prepared');
     }
 
-    return new Promise((resolve, reject) => {
-      this.listProjectFilesStmt!.all([projectId], (err, rows: any[]) => {
-        if (err) {
-          logger.error('❌ Failed to list project files', { error: err.message, projectId });
-          reject(err);
-        } else {
-          const files = rows.map(row => ({
-            id: row.id,
-            projectId: row.project_id,
-            path: row.path,
-            hash: row.hash,
-            lastModified: new Date(row.last_modified),
-            fileSize: row.file_size,
-            language: row.language,
-            lineCount: row.line_count,
-            createdAt: new Date(row.created_at),
-            updatedAt: new Date(row.updated_at),
-          }));
-          resolve(files);
-        }
+    try {
+      const rows = this.listProjectFilesStmt!.all([projectId]) as any[];
+      const files = rows.map(row => ({
+        id: row.id,
+        projectId: row.project_id,
+        path: row.path,
+        hash: row.hash,
+        lastModified: new Date(row.last_modified),
+        fileSize: row.file_size,
+        language: row.language,
+        lineCount: row.line_count,
+        createdAt: new Date(row.created_at),
+        updatedAt: new Date(row.updated_at),
+      }));
+      return files;
+    } catch (err) {
+      logger.error('❌ Failed to list project files', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
       });
-    });
+      throw err;
+    }
   }
 
   /**
@@ -1401,37 +1378,30 @@ export class LocalEmbeddingStorage {
       throw new Error('Database statements not prepared');
     }
 
-    return new Promise((resolve, reject) => {
+    try {
       this.insertProjectStmt!.run(
-        [
-          project.id,
-          project.name,
-          project.path,
-          project.type,
-          project.gitRemoteUrl || null,
-          project.gitBranch || null,
-          project.gitCommitSha || null,
-          project.workspaceRoot,
-        ],
-        err => {
-          if (err) {
-            logger.error('❌ Failed to register project', {
-              error: err.message,
-              projectId: project.id,
-              path: project.path,
-            });
-            reject(err);
-          } else {
-            logger.debug('✅ Project registered', {
-              projectId: project.id,
-              name: project.name,
-              path: project.path,
-            });
-            resolve();
-          }
-        }
+        project.id,
+        project.name,
+        project.path,
+        project.type,
+        project.gitRemoteUrl || null,
+        project.gitBranch || null,
+        project.gitCommitSha || null,
+        project.workspaceRoot
       );
-    });
+      logger.debug('✅ Project registered', {
+        projectId: project.id,
+        name: project.name,
+        path: project.path,
+      });
+    } catch (err) {
+      logger.error('❌ Failed to register project', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId: project.id,
+        path: project.path,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -1446,30 +1416,31 @@ export class LocalEmbeddingStorage {
       throw new Error('Database statements not prepared');
     }
 
-    return new Promise((resolve, reject) => {
-      this.getProjectStmt!.get([projectId], (err, row: any) => {
-        if (err) {
-          logger.error('❌ Failed to get project', { error: err.message, projectId });
-          reject(err);
-        } else if (!row) {
-          resolve(null);
-        } else {
-          resolve({
-            id: row.id,
-            name: row.name,
-            path: row.path,
-            type: row.type,
-            gitRemoteUrl: row.git_remote_url,
-            gitBranch: row.git_branch,
-            gitCommitSha: row.git_commit_sha,
-            workspaceRoot: row.workspace_root,
-            addedAt: new Date(row.added_at),
-            lastIndexed: row.last_indexed ? new Date(row.last_indexed) : undefined,
-            updatedAt: new Date(row.updated_at),
-          });
-        }
+    try {
+      const row = this.getProjectStmt!.get([projectId]) as any;
+      if (!row) {
+        return null;
+      }
+      return {
+        id: row.id,
+        name: row.name,
+        path: row.path,
+        type: row.type,
+        gitRemoteUrl: row.git_remote_url,
+        gitBranch: row.git_branch,
+        gitCommitSha: row.git_commit_sha,
+        workspaceRoot: row.workspace_root,
+        addedAt: new Date(row.added_at),
+        lastIndexed: row.last_indexed ? new Date(row.last_indexed) : undefined,
+        updatedAt: new Date(row.updated_at),
+      };
+    } catch (err) {
+      logger.error('❌ Failed to get project', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
       });
-    });
+      throw err;
+    }
   }
 
   /**
@@ -1484,30 +1455,31 @@ export class LocalEmbeddingStorage {
       throw new Error('Database statements not prepared');
     }
 
-    return new Promise((resolve, reject) => {
-      this.getProjectByPathStmt!.get([projectPath], (err, row: any) => {
-        if (err) {
-          logger.error('❌ Failed to get project by path', { error: err.message, projectPath });
-          reject(err);
-        } else if (!row) {
-          resolve(null);
-        } else {
-          resolve({
-            id: row.id,
-            name: row.name,
-            path: row.path,
-            type: row.type,
-            gitRemoteUrl: row.git_remote_url,
-            gitBranch: row.git_branch,
-            gitCommitSha: row.git_commit_sha,
-            workspaceRoot: row.workspace_root,
-            addedAt: new Date(row.added_at),
-            lastIndexed: row.last_indexed ? new Date(row.last_indexed) : undefined,
-            updatedAt: new Date(row.updated_at),
-          });
-        }
+    try {
+      const row = this.getProjectByPathStmt!.get([projectPath]) as any;
+      if (!row) {
+        return null;
+      }
+      return {
+        id: row.id,
+        name: row.name,
+        path: row.path,
+        type: row.type,
+        gitRemoteUrl: row.git_remote_url,
+        gitBranch: row.git_branch,
+        gitCommitSha: row.git_commit_sha,
+        workspaceRoot: row.workspace_root,
+        addedAt: new Date(row.added_at),
+        lastIndexed: row.last_indexed ? new Date(row.last_indexed) : undefined,
+        updatedAt: new Date(row.updated_at),
+      };
+    } catch (err) {
+      logger.error('❌ Failed to get project by path', {
+        error: err instanceof Error ? err.message : String(err),
+        projectPath,
       });
-    });
+      throw err;
+    }
   }
 
   /**
@@ -1522,20 +1494,16 @@ export class LocalEmbeddingStorage {
       throw new Error('Database statements not prepared');
     }
 
-    return new Promise((resolve, reject) => {
-      this.updateProjectLastIndexedStmt!.run([projectId], err => {
-        if (err) {
-          logger.error('❌ Failed to update project last indexed', {
-            error: err.message,
-            projectId,
-          });
-          reject(err);
-        } else {
-          logger.debug('✅ Project last indexed timestamp updated', { projectId });
-          resolve();
-        }
+    try {
+      this.updateProjectLastIndexedStmt!.run([projectId]);
+      logger.debug('✅ Project last indexed timestamp updated', { projectId });
+    } catch (err) {
+      logger.error('❌ Failed to update project last indexed', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
       });
-    });
+      throw err;
+    }
   }
 
   /**
@@ -1546,37 +1514,34 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
-      this.db.all(
-        'SELECT * FROM projects ORDER BY last_indexed DESC, added_at DESC',
-        (err, rows: any[]) => {
-          if (err) {
-            logger.error('❌ Failed to list projects', { error: err.message });
-            reject(err);
-          } else {
-            const projects = rows.map(row => ({
-              id: row.id,
-              name: row.name,
-              path: row.path,
-              type: row.type,
-              gitRemoteUrl: row.git_remote_url,
-              gitBranch: row.git_branch,
-              gitCommitSha: row.git_commit_sha,
-              workspaceRoot: row.workspace_root,
-              addedAt: new Date(row.added_at),
-              lastIndexed: row.last_indexed ? new Date(row.last_indexed) : undefined,
-              updatedAt: new Date(row.updated_at),
-            }));
-            resolve(projects);
-          }
-        }
-      );
-    });
+    try {
+      const rows = this.db
+        .prepare('SELECT * FROM projects ORDER BY last_indexed DESC, added_at DESC')
+        .all() as any[];
+
+      return rows.map(row => ({
+        id: row.id,
+        name: row.name,
+        path: row.path,
+        type: row.type,
+        gitRemoteUrl: row.git_remote_url,
+        gitBranch: row.git_branch,
+        gitCommitSha: row.git_commit_sha,
+        workspaceRoot: row.workspace_root,
+        addedAt: new Date(row.added_at),
+        lastIndexed: row.last_indexed ? new Date(row.last_indexed) : undefined,
+        updatedAt: new Date(row.updated_at),
+      }));
+    } catch (err) {
+      logger.error('❌ Failed to list projects', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
   }
 
   /**
@@ -1594,14 +1559,14 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
-      this.db.all(
-        `
+    try {
+      const rows = this.db
+        .prepare(
+          `
         SELECT
           ps.project_id,
           ps.total_chunks,
@@ -1610,23 +1575,22 @@ export class LocalEmbeddingStorage {
         FROM project_stats ps
         WHERE ps.total_chunks > 0
         ORDER BY ps.last_updated DESC
-      `,
-        (err, rows: any[]) => {
-          if (err) {
-            logger.error('❌ Failed to list projects with embeddings', { error: err.message });
-            reject(err);
-          } else {
-            const projects = rows.map(row => ({
-              projectId: row.project_id,
-              totalChunks: row.total_chunks,
-              totalFiles: row.total_files,
-              lastUpdated: new Date(row.last_updated),
-            }));
-            resolve(projects);
-          }
-        }
-      );
-    });
+      `
+        )
+        .all() as any[];
+
+      return rows.map(row => ({
+        projectId: row.project_id,
+        totalChunks: row.total_chunks,
+        totalFiles: row.total_files,
+        lastUpdated: new Date(row.last_updated),
+      }));
+    } catch (err) {
+      logger.error('❌ Failed to list projects with embeddings', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
   }
 
   /**
@@ -1639,25 +1603,27 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      this.db!.get(
-        'SELECT * FROM project_stats WHERE project_id = ?',
-        [projectId],
-        (err, row: any) => {
-          if (err) {
-            reject(err);
-          } else if (!row) {
-            resolve(null);
-          } else {
-            resolve({
-              totalChunks: row.total_chunks,
-              totalFiles: row.total_files,
-              lastUpdated: new Date(row.last_updated),
-            });
-          }
-        }
-      );
-    });
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      const row = this.db
+        .prepare('SELECT * FROM project_stats WHERE project_id = ?')
+        .get(projectId) as any;
+
+      if (!row) {
+        return null;
+      }
+
+      return {
+        totalChunks: row.total_chunks,
+        totalFiles: row.total_files,
+        lastUpdated: new Date(row.last_updated),
+      };
+    } catch (err) {
+      throw err;
+    }
   }
 
   /**
@@ -1673,130 +1639,108 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      // Get current model info from database
+      const row = this.db
+        .prepare('SELECT * FROM embedding_models WHERE project_id = ?')
+        .get(projectId) as any;
+
+      const currentModel: EmbeddingModelInfo = {
+        projectId,
+        currentProvider,
+        currentDimensions,
+        currentFormat,
+        lastModelChange: new Date(),
+        migrationNeeded: false,
+      };
+
+      if (!row) {
+        // First time setup - no previous model
+        this.db
+          .prepare(
+            'INSERT INTO embedding_models (project_id, current_provider, current_dimensions, current_format) VALUES (?, ?, ?, ?)'
+          )
+          .run(projectId, currentProvider, currentDimensions, currentFormat);
+
+        return {
+          changed: false,
+          currentModel,
+          incompatibleEmbeddings: 0,
+          migrationRecommended: false,
+        };
       }
 
-      // Get current model info from database
-      this.db.get(
-        'SELECT * FROM embedding_models WHERE project_id = ?',
-        [projectId],
-        (err, row: any) => {
-          if (err) {
-            reject(err);
-            return;
-          }
+      const previousModel: EmbeddingModelInfo = {
+        projectId: row.project_id,
+        currentProvider: row.current_provider,
+        currentDimensions: row.current_dimensions,
+        currentFormat: row.current_format,
+        lastModelChange: new Date(row.last_model_change),
+        migrationNeeded: row.migration_needed === 1,
+      };
 
-          const currentModel: EmbeddingModelInfo = {
-            projectId,
+      // Check if model has changed
+      const modelChanged =
+        previousModel.currentProvider !== currentProvider ||
+        previousModel.currentDimensions !== currentDimensions ||
+        previousModel.currentFormat !== currentFormat;
+
+      if (modelChanged) {
+        // Count incompatible embeddings
+        const countRow = this.db
+          .prepare(
+            'SELECT COUNT(*) as count FROM embeddings WHERE project_id = ? AND (metadata_embedding_provider != ? OR metadata_embedding_dimensions != ?)'
+          )
+          .get(projectId, currentProvider, currentDimensions) as any;
+
+        const incompatibleCount = countRow?.count || 0;
+        const migrationRecommended = incompatibleCount > 0;
+
+        // Update model info in database
+        this.db
+          .prepare(
+            'UPDATE embedding_models SET current_provider = ?, current_dimensions = ?, current_format = ?, last_model_change = CURRENT_TIMESTAMP, migration_needed = ? WHERE project_id = ?'
+          )
+          .run(
             currentProvider,
             currentDimensions,
             currentFormat,
-            lastModelChange: new Date(),
-            migrationNeeded: false,
-          };
+            migrationRecommended ? 1 : 0,
+            projectId
+          );
 
-          if (!row) {
-            // First time setup - no previous model
-            this.db!.run(
-              'INSERT INTO embedding_models (project_id, current_provider, current_dimensions, current_format) VALUES (?, ?, ?, ?)',
-              [projectId, currentProvider, currentDimensions, currentFormat],
-              insertErr => {
-                if (insertErr) {
-                  reject(insertErr);
-                  return;
-                }
+        logger.warn('⚠️ Embedding model change detected', {
+          projectId,
+          previousProvider: previousModel.currentProvider,
+          currentProvider,
+          previousDimensions: previousModel.currentDimensions,
+          currentDimensions,
+          incompatibleEmbeddings: incompatibleCount,
+          migrationRecommended,
+        });
 
-                resolve({
-                  changed: false,
-                  currentModel,
-                  incompatibleEmbeddings: 0,
-                  migrationRecommended: false,
-                });
-              }
-            );
-            return;
-          }
-
-          const previousModel: EmbeddingModelInfo = {
-            projectId: row.project_id,
-            currentProvider: row.current_provider,
-            currentDimensions: row.current_dimensions,
-            currentFormat: row.current_format,
-            lastModelChange: new Date(row.last_model_change),
-            migrationNeeded: row.migration_needed === 1,
-          };
-
-          // Check if model has changed
-          const modelChanged =
-            previousModel.currentProvider !== currentProvider ||
-            previousModel.currentDimensions !== currentDimensions ||
-            previousModel.currentFormat !== currentFormat;
-
-          if (modelChanged) {
-            // Count incompatible embeddings
-            this.db!.get(
-              'SELECT COUNT(*) as count FROM embeddings WHERE project_id = ? AND (metadata_embedding_provider != ? OR metadata_embedding_dimensions != ?)',
-              [projectId, currentProvider, currentDimensions],
-              (countErr, countRow: any) => {
-                if (countErr) {
-                  reject(countErr);
-                  return;
-                }
-
-                const incompatibleCount = countRow?.count || 0;
-                const migrationRecommended = incompatibleCount > 0;
-
-                // Update model info in database
-                this.db!.run(
-                  'UPDATE embedding_models SET current_provider = ?, current_dimensions = ?, current_format = ?, last_model_change = CURRENT_TIMESTAMP, migration_needed = ? WHERE project_id = ?',
-                  [
-                    currentProvider,
-                    currentDimensions,
-                    currentFormat,
-                    migrationRecommended ? 1 : 0,
-                    projectId,
-                  ],
-                  updateErr => {
-                    if (updateErr) {
-                      reject(updateErr);
-                      return;
-                    }
-
-                    logger.warn('⚠️ Embedding model change detected', {
-                      projectId,
-                      previousProvider: previousModel.currentProvider,
-                      currentProvider,
-                      previousDimensions: previousModel.currentDimensions,
-                      currentDimensions,
-                      incompatibleEmbeddings: incompatibleCount,
-                      migrationRecommended,
-                    });
-
-                    resolve({
-                      changed: true,
-                      previousModel,
-                      currentModel: { ...currentModel, migrationNeeded: migrationRecommended },
-                      incompatibleEmbeddings: incompatibleCount,
-                      migrationRecommended,
-                    });
-                  }
-                );
-              }
-            );
-          } else {
-            resolve({
-              changed: false,
-              currentModel: previousModel,
-              incompatibleEmbeddings: 0,
-              migrationRecommended: false,
-            });
-          }
-        }
-      );
-    });
+        return {
+          changed: true,
+          previousModel,
+          currentModel: { ...currentModel, migrationNeeded: migrationRecommended },
+          incompatibleEmbeddings: incompatibleCount,
+          migrationRecommended,
+        };
+      } else {
+        return {
+          changed: false,
+          currentModel: previousModel,
+          incompatibleEmbeddings: 0,
+          migrationRecommended: false,
+        };
+      }
+    } catch (err) {
+      throw err;
+    }
   }
 
   /**
@@ -1807,41 +1751,38 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    try {
+      const row = this.db
+        .prepare('SELECT * FROM embedding_models WHERE project_id = ?')
+        .get(projectId) as any;
+
+      if (!row) {
+        return null;
       }
 
-      this.db.get(
-        'SELECT * FROM embedding_models WHERE project_id = ?',
-        [projectId],
-        (err, row: any) => {
-          if (err) {
-            reject(err);
-          } else if (!row) {
-            resolve(null);
-          } else {
-            const norm = (label: string) => {
-              const l = (label || '').toLowerCase();
-              if (l.startsWith('text-embedding-')) return 'openai';
-              if (l.startsWith('voyage-') || l === 'voyageai' || l === 'ambiance')
-                return 'voyageai';
-              if (l.includes('minilm') || l.includes('transformers')) return 'local';
-              return label;
-            };
-            resolve({
-              projectId: row.project_id,
-              currentProvider: norm(row.current_provider),
-              currentDimensions: row.current_dimensions,
-              currentFormat: row.current_format,
-              lastModelChange: new Date(row.last_model_change),
-              migrationNeeded: row.migration_needed === 1,
-            });
-          }
-        }
-      );
-    });
+      const norm = (label: string) => {
+        const l = (label || '').toLowerCase();
+        if (l.startsWith('text-embedding-')) return 'openai';
+        if (l.startsWith('voyage-') || l === 'voyageai' || l === 'ambiance') return 'voyageai';
+        if (l.includes('minilm') || l.includes('transformers')) return 'local';
+        return label;
+      };
+
+      return {
+        projectId: row.project_id,
+        currentProvider: norm(row.current_provider),
+        currentDimensions: row.current_dimensions,
+        currentFormat: row.current_format,
+        lastModelChange: new Date(row.last_model_change),
+        migrationNeeded: row.migration_needed === 1,
+      };
+    } catch (err) {
+      throw err;
+    }
   }
 
   /**
@@ -1861,261 +1802,227 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
+    try {
       // First, check the embedding_models table for the authoritative model info
-      this.db.get(
-        'SELECT * FROM embedding_models WHERE project_id = ?',
-        [projectId],
-        (modelErr, modelRow: any) => {
-          if (modelErr) {
-            reject(modelErr);
-            return;
-          }
+      const modelRow = this.db
+        .prepare('SELECT * FROM embedding_models WHERE project_id = ?')
+        .get(projectId) as any;
 
-          const issues: string[] = [];
-          const recommendations: string[] = [];
-          let compatible = true;
+      const issues: string[] = [];
+      const recommendations: string[] = [];
+      let compatible = true;
 
-          // Normalize provider labels (handle legacy rows that stored model as provider)
-          const norm = (label: string) => {
-            const l = (label || '').toLowerCase();
-            if (l.startsWith('text-embedding-')) return 'openai';
-            if (l.startsWith('voyage-') || l === 'voyageai' || l === 'ambiance') return 'voyageai';
-            if (l.includes('minilm') || l.includes('transformers') || l.includes('e5'))
-              return 'local';
-            return label;
-          };
+      // Normalize provider labels (handle legacy rows that stored model as provider)
+      const norm = (label: string) => {
+        const l = (label || '').toLowerCase();
+        if (l.startsWith('text-embedding-')) return 'openai';
+        if (l.startsWith('voyage-') || l === 'voyageai' || l === 'ambiance') return 'voyageai';
+        if (l.includes('minilm') || l.includes('transformers') || l.includes('e5')) return 'local';
+        return label;
+      };
 
-          // If we have model info in the table, use that as the source of truth
-          if (modelRow) {
-            const storedProvider = norm(modelRow.current_provider);
-            const storedDimensions = modelRow.current_dimensions;
+      // If we have model info in the table, use that as the source of truth
+      if (modelRow) {
+        const storedProvider = norm(modelRow.current_provider);
+        const storedDimensions = modelRow.current_dimensions;
 
-            logger.debug('🔍 Checking embedding model compatibility using model table', {
-              currentProvider,
-              currentDimensions,
-              storedProvider,
-              storedDimensions,
-              modelRowExists: true,
-              providerMatch: currentProvider ? norm(currentProvider) === storedProvider : true,
-              dimensionMatch: currentDimensions ? storedDimensions === currentDimensions : true,
-            });
+        logger.debug('🔍 Checking embedding model compatibility using model table', {
+          currentProvider,
+          currentDimensions,
+          storedProvider,
+          storedDimensions,
+          modelRowExists: true,
+          providerMatch: currentProvider ? norm(currentProvider) === storedProvider : true,
+          dimensionMatch: currentDimensions ? storedDimensions === currentDimensions : true,
+        });
 
-            // Check if current model matches stored model
-            if (currentProvider && currentDimensions) {
-              const normalizedCurrentProvider = norm(currentProvider);
+        // Check if current model matches stored model
+        if (currentProvider && currentDimensions) {
+          const normalizedCurrentProvider = norm(currentProvider);
 
-              if (
-                normalizedCurrentProvider !== storedProvider ||
-                storedDimensions !== currentDimensions
-              ) {
-                compatible = false;
-                issues.push(
-                  `Stored model configuration (${storedProvider}, ${storedDimensions}D) doesn't match current model (${normalizedCurrentProvider}, ${currentDimensions}D)`
-                );
-                recommendations.push(
-                  'Run "manage_embeddings action=create" to regenerate embeddings with the current model configuration'
-                );
-              }
-            }
-
-            // Also check that stored embeddings match the model table info
-            this.db!.all(
-              `SELECT
-                metadata_embedding_provider,
-                metadata_embedding_dimensions,
-                COUNT(*) as count
-              FROM embeddings
-              WHERE project_id = ?
-              GROUP BY metadata_embedding_provider, metadata_embedding_dimensions`,
-              [projectId],
-              (embedErr, embedRows: any[]) => {
-                if (embedErr) {
-                  reject(embedErr);
-                  return;
-                }
-
-                const merged: Record<
-                  string,
-                  { provider: string; dimensions: number; count: number }
-                > = {};
-                for (const r of embedRows) {
-                  const key = `${norm(r.metadata_embedding_provider)}:${r.metadata_embedding_dimensions}`;
-                  if (!merged[key]) {
-                    merged[key] = {
-                      provider: norm(r.metadata_embedding_provider),
-                      dimensions: r.metadata_embedding_dimensions,
-                      count: 0,
-                    };
-                  }
-                  merged[key].count += r.count;
-                }
-                const mergedRows = Object.values(merged);
-
-                // Check for consistency between model table and stored embeddings
-                if (mergedRows.length > 0) {
-                  const modelTableProvider = storedProvider;
-                  const modelTableDimensions = storedDimensions;
-
-                  const inconsistentEmbeddings = mergedRows.filter(
-                    row =>
-                      row.provider !== modelTableProvider || row.dimensions !== modelTableDimensions
-                  );
-
-                  if (inconsistentEmbeddings.length > 0) {
-                    compatible = false;
-                    const inconsistencySummary = inconsistentEmbeddings
-                      .map(row => `${row.provider} (${row.dimensions}D): ${row.count} embeddings`)
-                      .join(', ');
-
-                    issues.push(
-                      `Stored embeddings don't match model configuration: ${inconsistencySummary} vs expected ${modelTableProvider} (${modelTableDimensions}D)`
-                    );
-                    recommendations.push(
-                      'Run "manage_embeddings action=create" to fix embedding metadata consistency'
-                    );
-                  }
-                }
-
-                // Check for null or invalid dimensions
-                this.db!.get(
-                  'SELECT COUNT(*) as count FROM embeddings WHERE project_id = ? AND (metadata_embedding_dimensions IS NULL OR metadata_embedding_dimensions <= 0)',
-                  [projectId],
-                  (nullErr, nullRow: any) => {
-                    if (nullErr) {
-                      reject(nullErr);
-                      return;
-                    }
-
-                    if (nullRow?.count > 0) {
-                      compatible = false;
-                      issues.push(
-                        `${nullRow.count} embeddings have invalid or missing dimension information`
-                      );
-                      recommendations.push('Regenerate embeddings with proper metadata');
-                    }
-
-                    resolve({
-                      compatible,
-                      issues,
-                      recommendations,
-                    });
-                  }
-                );
-              }
+          if (
+            normalizedCurrentProvider !== storedProvider ||
+            storedDimensions !== currentDimensions
+          ) {
+            compatible = false;
+            issues.push(
+              `Stored model configuration (${storedProvider}, ${storedDimensions}D) doesn't match current model (${normalizedCurrentProvider}, ${currentDimensions}D)`
             );
-          } else {
-            // Fallback to checking embeddings directly if no model info exists
-            logger.debug('🔍 No model info in table, falling back to embedding metadata check', {
-              modelRow: modelRow,
-              modelRowExists: !!modelRow,
-            });
-
-            this.db!.all(
-              `SELECT
-                metadata_embedding_provider,
-                metadata_embedding_dimensions,
-                COUNT(*) as count
-              FROM embeddings
-              WHERE project_id = ?
-              GROUP BY metadata_embedding_provider, metadata_embedding_dimensions`,
-              [projectId],
-              (embedErr, embedRows: any[]) => {
-                if (embedErr) {
-                  reject(embedErr);
-                  return;
-                }
-
-                const merged: Record<
-                  string,
-                  { provider: string; dimensions: number; count: number }
-                > = {};
-                for (const r of embedRows) {
-                  const key = `${norm(r.metadata_embedding_provider)}:${r.metadata_embedding_dimensions}`;
-                  if (!merged[key]) {
-                    merged[key] = {
-                      provider: norm(r.metadata_embedding_provider),
-                      dimensions: r.metadata_embedding_dimensions,
-                      count: 0,
-                    };
-                  }
-                  merged[key].count += r.count;
-                }
-                const mergedRows = Object.values(merged);
-
-                if (mergedRows.length > 1) {
-                  compatible = false;
-                  const modelSummary = mergedRows
-                    .map(row => `${row.provider} (${row.dimensions}D): ${row.count} embeddings`)
-                    .join(', ');
-
-                  issues.push(`Mixed embedding models detected: ${modelSummary}`);
-                  recommendations.push(
-                    'Consider regenerating all embeddings with a single model for consistent similarity search results'
-                  );
-                }
-
-                if (mergedRows.length === 0) {
-                  issues.push('No embeddings found for this project');
-                  recommendations.push('Generate embeddings for the project first');
-                }
-
-                // Check if stored embeddings match current model configuration
-                if (currentProvider && currentDimensions && mergedRows.length === 1) {
-                  const storedModel = mergedRows[0];
-                  const normalizedCurrentProvider = norm(currentProvider);
-                  const normalizedStoredProvider = norm(storedModel.provider);
-
-                  if (
-                    normalizedStoredProvider !== normalizedCurrentProvider ||
-                    storedModel.dimensions !== currentDimensions
-                  ) {
-                    compatible = false;
-                    issues.push(
-                      `Stored embeddings (${normalizedStoredProvider}, ${storedModel.dimensions}D) don't match current model (${normalizedCurrentProvider}, ${currentDimensions}D)`
-                    );
-                    recommendations.push(
-                      'Run "manage_embeddings action=create" to regenerate embeddings with the current model configuration'
-                    );
-                  }
-                }
-
-                // Check for null or invalid dimensions
-                this.db!.get(
-                  'SELECT COUNT(*) as count FROM embeddings WHERE project_id = ? AND (metadata_embedding_dimensions IS NULL OR metadata_embedding_dimensions <= 0)',
-                  [projectId],
-                  (nullErr, nullRow: any) => {
-                    if (nullErr) {
-                      reject(nullErr);
-                      return;
-                    }
-
-                    if (nullRow?.count > 0) {
-                      compatible = false;
-                      issues.push(
-                        `${nullRow.count} embeddings have invalid or missing dimension information`
-                      );
-                      recommendations.push('Regenerate embeddings with proper metadata');
-                    }
-
-                    resolve({
-                      compatible,
-                      issues,
-                      recommendations,
-                    });
-                  }
-                );
-              }
+            recommendations.push(
+              'Run "manage_embeddings action=create" to regenerate embeddings with the current model configuration'
             );
           }
         }
-      );
-    });
+
+        // Also check that stored embeddings match the model table info
+        const embedRows = this.db
+          .prepare(
+            `
+          SELECT
+            metadata_embedding_provider,
+            metadata_embedding_dimensions,
+            COUNT(*) as count
+          FROM embeddings
+          WHERE project_id = ?
+          GROUP BY metadata_embedding_provider, metadata_embedding_dimensions
+        `
+          )
+          .all(projectId) as any[];
+
+        const merged: Record<string, { provider: string; dimensions: number; count: number }> = {};
+        for (const r of embedRows) {
+          const key = `${norm(r.metadata_embedding_provider)}:${r.metadata_embedding_dimensions}`;
+          if (!merged[key]) {
+            merged[key] = {
+              provider: norm(r.metadata_embedding_provider),
+              dimensions: r.metadata_embedding_dimensions,
+              count: 0,
+            };
+          }
+          merged[key].count += r.count;
+        }
+        const mergedRows = Object.values(merged);
+
+        // Check for consistency between model table and stored embeddings
+        if (mergedRows.length > 0) {
+          const modelTableProvider = storedProvider;
+          const modelTableDimensions = storedDimensions;
+
+          const inconsistentEmbeddings = mergedRows.filter(
+            row => row.provider !== modelTableProvider || row.dimensions !== modelTableDimensions
+          );
+
+          if (inconsistentEmbeddings.length > 0) {
+            compatible = false;
+            const inconsistencySummary = inconsistentEmbeddings
+              .map(row => `${row.provider} (${row.dimensions}D): ${row.count} embeddings`)
+              .join(', ');
+
+            issues.push(
+              `Stored embeddings don't match model configuration: ${inconsistencySummary} vs expected ${modelTableProvider} (${modelTableDimensions}D)`
+            );
+            recommendations.push(
+              'Run "manage_embeddings action=create" to fix embedding metadata consistency'
+            );
+          }
+        }
+
+        // Check for null or invalid dimensions
+        const nullRow = this.db
+          .prepare(
+            'SELECT COUNT(*) as count FROM embeddings WHERE project_id = ? AND (metadata_embedding_dimensions IS NULL OR metadata_embedding_dimensions <= 0)'
+          )
+          .get(projectId) as any;
+
+        if (nullRow?.count > 0) {
+          compatible = false;
+          issues.push(`${nullRow.count} embeddings have invalid or missing dimension information`);
+          recommendations.push('Regenerate embeddings with proper metadata');
+        }
+
+        return {
+          compatible,
+          issues,
+          recommendations,
+        };
+      } else {
+        // Fallback to checking embeddings directly if no model info exists
+        logger.debug('🔍 No model info in table, falling back to embedding metadata check', {
+          modelRow: modelRow,
+          modelRowExists: !!modelRow,
+        });
+
+        const embedRows = this.db
+          .prepare(
+            `
+          SELECT
+            metadata_embedding_provider,
+            metadata_embedding_dimensions,
+            COUNT(*) as count
+          FROM embeddings
+          WHERE project_id = ?
+          GROUP BY metadata_embedding_provider, metadata_embedding_dimensions
+        `
+          )
+          .all(projectId) as any[];
+
+        const merged: Record<string, { provider: string; dimensions: number; count: number }> = {};
+        for (const r of embedRows) {
+          const key = `${norm(r.metadata_embedding_provider)}:${r.metadata_embedding_dimensions}`;
+          if (!merged[key]) {
+            merged[key] = {
+              provider: norm(r.metadata_embedding_provider),
+              dimensions: r.metadata_embedding_dimensions,
+              count: 0,
+            };
+          }
+          merged[key].count += r.count;
+        }
+        const mergedRows = Object.values(merged);
+
+        if (mergedRows.length > 1) {
+          compatible = false;
+          const modelSummary = mergedRows
+            .map(row => `${row.provider} (${row.dimensions}D): ${row.count} embeddings`)
+            .join(', ');
+
+          issues.push(`Mixed embedding models detected: ${modelSummary}`);
+          recommendations.push(
+            'Consider regenerating all embeddings with a single model for consistent similarity search results'
+          );
+        }
+
+        if (mergedRows.length === 0) {
+          issues.push('No embeddings found for this project');
+          recommendations.push('Generate embeddings for the project first');
+        }
+
+        // Check if stored embeddings match current model configuration
+        if (currentProvider && currentDimensions && mergedRows.length === 1) {
+          const storedModel = mergedRows[0];
+          const normalizedCurrentProvider = norm(currentProvider);
+          const normalizedStoredProvider = norm(storedModel.provider);
+
+          if (
+            normalizedStoredProvider !== normalizedCurrentProvider ||
+            storedModel.dimensions !== currentDimensions
+          ) {
+            compatible = false;
+            issues.push(
+              `Stored embeddings (${normalizedStoredProvider}, ${storedModel.dimensions}D) don't match current model (${normalizedCurrentProvider}, ${currentDimensions}D)`
+            );
+            recommendations.push(
+              'Run "manage_embeddings action=create" to regenerate embeddings with the current model configuration'
+            );
+          }
+        }
+
+        // Check for null or invalid dimensions
+        const nullRow = this.db
+          .prepare(
+            'SELECT COUNT(*) as count FROM embeddings WHERE project_id = ? AND (metadata_embedding_dimensions IS NULL OR metadata_embedding_dimensions <= 0)'
+          )
+          .get(projectId) as any;
+
+        if (nullRow?.count > 0) {
+          compatible = false;
+          issues.push(`${nullRow.count} embeddings have invalid or missing dimension information`);
+          recommendations.push('Regenerate embeddings with proper metadata');
+        }
+
+        return {
+          compatible,
+          issues,
+          recommendations,
+        };
+      }
+    } catch (err) {
+      throw err;
+    }
   }
 
   /**
@@ -2125,85 +2032,70 @@ export class LocalEmbeddingStorage {
   async ensureDimensionCompatibility(dimensions: number): Promise<void> {
     await this.initializeDatabase();
 
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
     logger.info('🔍 Checking database dimension compatibility', { dimensions });
 
-    // Check if there are existing embeddings with different dimensions
-    return new Promise((resolve, reject) => {
-      this.db!.get(
-        `SELECT DISTINCT metadata_embedding_dimensions as existing_dimensions, COUNT(*) as count,
+    try {
+      // Check if there are existing embeddings with different dimensions
+      const row = this.db
+        .prepare(
+          `
+        SELECT DISTINCT metadata_embedding_dimensions as existing_dimensions, COUNT(*) as count,
                 GROUP_CONCAT(DISTINCT project_id) as affected_projects
          FROM embeddings
          WHERE metadata_embedding_dimensions IS NOT NULL 
-         LIMIT 1`,
-        (err, row: any) => {
-          if (err) {
-            reject(new Error(`Failed to check existing dimensions: ${err.message}`));
-            return;
-          }
+         LIMIT 1
+      `
+        )
+        .get() as any;
 
-          if (row && row.existing_dimensions && row.existing_dimensions !== dimensions) {
-            logger.warn('🚨 Incompatible embedding dimensions detected - clearing old embeddings', {
-              existing: row.existing_dimensions,
-              requested: dimensions,
-              affectedEmbeddings: row.count,
-              affectedProjects: row.affected_projects,
-            });
+      if (row && row.existing_dimensions && row.existing_dimensions !== dimensions) {
+        logger.warn('🚨 Incompatible embedding dimensions detected - clearing old embeddings', {
+          existing: row.existing_dimensions,
+          requested: dimensions,
+          affectedEmbeddings: row.count,
+          affectedProjects: row.affected_projects,
+        });
 
-            // Clear all incompatible embeddings
-            this.db!.run(
-              `DELETE FROM embeddings WHERE metadata_embedding_dimensions != ?`,
-              [dimensions],
-              deleteErr => {
-                if (deleteErr) {
-                  reject(
-                    new Error(`Failed to clear incompatible embeddings: ${deleteErr.message}`)
-                  );
-                  return;
-                }
+        // Clear all incompatible embeddings
+        this.db
+          .prepare(`DELETE FROM embeddings WHERE metadata_embedding_dimensions != ?`)
+          .run(dimensions);
 
-                // Also clear related metadata for affected projects
-                this.db!.run(
-                  `DELETE FROM project_stats WHERE project_id IN (${
-                    row.affected_projects
-                      ?.split(',')
-                      .map(() => '?')
-                      .join(',') || ''
-                  })`,
-                  row.affected_projects?.split(',') || [],
-                  metaErr => {
-                    if (metaErr) {
-                      logger.warn('⚠️ Failed to clear project metadata', {
-                        error: metaErr.message,
-                      });
-                    }
-
-                    logger.info('🧹 Successfully cleared incompatible embeddings', {
-                      clearedEmbeddings: row.count,
-                      oldDimensions: row.existing_dimensions,
-                      newDimensions: dimensions,
-                      affectedProjects: row.affected_projects,
-                    });
-
-                    logger.info('✅ Database is now ready for new embedding dimensions', {
-                      dimensions,
-                    });
-                    resolve();
-                  }
-                );
-              }
-            );
-          } else {
-            logger.info('✅ Database dimension compatibility verified', {
-              dimensions,
-              hasExistingData: !!row && row.count > 0,
-              existingDimensions: row?.existing_dimensions || 'none',
-            });
-
-            resolve();
-          }
+        // Also clear related metadata for affected projects
+        if (row.affected_projects) {
+          const projectIds = row.affected_projects.split(',');
+          const placeholders = projectIds.map(() => '?').join(',');
+          this.db
+            .prepare(`DELETE FROM project_stats WHERE project_id IN (${placeholders})`)
+            .run(...projectIds);
         }
+
+        logger.info('🧹 Successfully cleared incompatible embeddings', {
+          clearedEmbeddings: row.count,
+          oldDimensions: row.existing_dimensions,
+          newDimensions: dimensions,
+          affectedProjects: row.affected_projects,
+        });
+
+        logger.info('✅ Database is now ready for new embedding dimensions', {
+          dimensions,
+        });
+      } else {
+        logger.info('✅ Database dimension compatibility verified', {
+          dimensions,
+          hasExistingData: !!row && row.count > 0,
+          existingDimensions: row?.existing_dimensions || 'none',
+        });
+      }
+    } catch (err) {
+      throw new Error(
+        `Failed to ensure dimension compatibility: ${err instanceof Error ? err.message : String(err)}`
       );
-    });
+    }
   }
 
   /**
@@ -2212,43 +2104,41 @@ export class LocalEmbeddingStorage {
   async clearAllEmbeddings(): Promise<void> {
     await this.initializeDatabase();
 
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
     logger.info('🧹 Clearing all embeddings for fresh start');
 
-    return new Promise((resolve, reject) => {
-      this.db!.serialize(() => {
-        // Get stats before clearing
-        this.db!.get(
-          `SELECT COUNT(*) as embedding_count, COUNT(DISTINCT project_id) as project_count FROM embeddings`,
-          (err, stats: any) => {
-            if (err) {
-              logger.warn('⚠️ Could not get stats before clearing', { error: err.message });
-            }
+    try {
+      // Get stats before clearing
+      const stats = this.db
+        .prepare(
+          `SELECT COUNT(*) as embedding_count, COUNT(DISTINCT project_id) as project_count FROM embeddings`
+        )
+        .get() as any;
 
-            // Clear embeddings table
-            this.db!.run(`DELETE FROM embeddings`, deleteErr => {
-              if (deleteErr) {
-                reject(new Error(`Failed to clear embeddings: ${deleteErr.message}`));
-                return;
-              }
+      // Clear embeddings table
+      this.db.prepare(`DELETE FROM embeddings`).run();
 
-              // Clear projects metadata
-              this.db!.run(`DELETE FROM project_stats`, metaErr => {
-                if (metaErr) {
-                  logger.warn('⚠️ Failed to clear project metadata', { error: metaErr.message });
-                }
+      // Clear projects metadata
+      try {
+        this.db.prepare(`DELETE FROM project_stats`).run();
+      } catch (metaErr) {
+        logger.warn('⚠️ Failed to clear project metadata', {
+          error: metaErr instanceof Error ? metaErr.message : String(metaErr),
+        });
+      }
 
-                logger.info('🧹 Successfully cleared all embeddings', {
-                  clearedEmbeddings: stats?.embedding_count || 0,
-                  clearedProjects: stats?.project_count || 0,
-                });
-
-                resolve();
-              });
-            });
-          }
-        );
+      logger.info('🧹 Successfully cleared all embeddings', {
+        clearedEmbeddings: stats?.embedding_count || 0,
+        clearedProjects: stats?.project_count || 0,
       });
-    });
+    } catch (err) {
+      throw new Error(
+        `Failed to clear embeddings: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   /**
@@ -2257,68 +2147,344 @@ export class LocalEmbeddingStorage {
   async clearProjectEmbeddings(projectId: string): Promise<void> {
     await this.initializeDatabase();
 
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
     logger.info('🧹 Clearing embeddings for project', { projectId });
 
-    return new Promise((resolve, reject) => {
-      this.db!.serialize(() => {
-        // Get count before clearing
-        this.db!.get(
-          `SELECT COUNT(*) as count FROM embeddings WHERE project_id = ?`,
-          [projectId],
-          (err, stats: any) => {
-            if (err) {
-              logger.warn('⚠️ Could not get project stats before clearing', {
-                error: err.message,
-                projectId,
-              });
-            }
+    try {
+      // Get count before clearing
+      const stats = this.db
+        .prepare(`SELECT COUNT(*) as count FROM embeddings WHERE project_id = ?`)
+        .get(projectId) as any;
 
-            // Clear project embeddings
-            this.db!.run(`DELETE FROM embeddings WHERE project_id = ?`, [projectId], deleteErr => {
-              if (deleteErr) {
-                reject(new Error(`Failed to clear project embeddings: ${deleteErr.message}`));
-                return;
-              }
+      // Clear project embeddings
+      this.db.prepare(`DELETE FROM embeddings WHERE project_id = ?`).run(projectId);
 
-              // Clear project metadata
-              this.db!.run(
-                `DELETE FROM project_stats WHERE project_id = ?`,
-                [projectId],
-                metaErr => {
-                  if (metaErr) {
-                    logger.warn('⚠️ Failed to clear project metadata', {
-                      error: metaErr.message,
-                      projectId,
-                    });
-                  }
+      // Clear project metadata
+      try {
+        this.db.prepare(`DELETE FROM project_stats WHERE project_id = ?`).run(projectId);
+      } catch (metaErr) {
+        logger.warn('⚠️ Failed to clear project metadata', {
+          error: metaErr instanceof Error ? metaErr.message : String(metaErr),
+          projectId,
+        });
+      }
 
-                  // Clear embedding model info for the project
-                  this.db!.run(
-                    `DELETE FROM embedding_models WHERE project_id = ?`,
-                    [projectId],
-                    modelErr => {
-                      if (modelErr) {
-                        logger.warn('⚠️ Failed to clear embedding model info', {
-                          error: modelErr.message,
-                          projectId,
-                        });
-                      }
+      // Clear embedding model info for the project
+      try {
+        this.db.prepare(`DELETE FROM embedding_models WHERE project_id = ?`).run(projectId);
+      } catch (modelErr) {
+        logger.warn('⚠️ Failed to clear embedding model info', {
+          error: modelErr instanceof Error ? modelErr.message : String(modelErr),
+          projectId,
+        });
+      }
 
-                      logger.info('🧹 Successfully cleared project embeddings', {
-                        projectId,
-                        clearedEmbeddings: stats?.count || 0,
-                      });
-
-                      resolve();
-                    }
-                  );
-                }
-              );
-            });
-          }
-        );
+      logger.info('🧹 Successfully cleared project embeddings', {
+        projectId,
+        clearedEmbeddings: stats?.count || 0,
       });
-    });
+    } catch (err) {
+      throw new Error(
+        `Failed to clear project embeddings: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Delete all embeddings for a specific file
+   */
+  async deleteEmbeddingsByFile(fileId: string): Promise<number> {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    if (!fileId) {
+      throw new Error('fileId is required');
+    }
+
+    try {
+      // Get count before deletion for logging
+      const stats = this.db!.prepare(
+        `SELECT COUNT(*) as count FROM embeddings WHERE file_id = ?`
+      ).get(fileId) as any;
+
+      // Delete all embeddings for this file
+      const result = this.db!.prepare(`DELETE FROM embeddings WHERE file_id = ?`).run(fileId);
+
+      const deletedCount = stats?.count || 0;
+      logger.info('🧹 Cleaned up old embeddings for file', {
+        fileId,
+        deletedChunks: deletedCount,
+      });
+
+      return deletedCount;
+    } catch (err) {
+      logger.error('❌ Failed to delete embeddings by file', {
+        fileId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new Error(
+        `Failed to delete embeddings for file ${fileId}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Find stale embeddings within a project (multiple generations of same file)
+   */
+  async findStaleFileEmbeddings(projectId: string): Promise<
+    Array<{
+      fileId: string;
+      filePath: string;
+      generationCount: number;
+      generations: Array<{
+        createdAt: Date;
+        chunkCount: number;
+        embeddings: Array<{ id: string; chunkIndex: number; hash: string }>;
+      }>;
+    }>
+  > {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+
+    try {
+      // Find files that have embeddings from multiple creation times (indicating re-processing)
+      const staleFiles = this.db!.prepare(
+        `
+        SELECT
+          file_id,
+          file_path,
+          COUNT(DISTINCT DATE(created_at)) as generation_count
+        FROM embeddings
+        WHERE project_id = ? AND file_id IS NOT NULL
+        GROUP BY file_id, file_path
+        HAVING generation_count > 1
+        ORDER BY generation_count DESC
+      `
+      ).all(projectId) as Array<{ file_id: string; file_path: string; generation_count: number }>;
+
+      const result: Array<{
+        fileId: string;
+        filePath: string;
+        generationCount: number;
+        generations: Array<{
+          createdAt: Date;
+          chunkCount: number;
+          embeddings: Array<{ id: string; chunkIndex: number; hash: string }>;
+        }>;
+      }> = [];
+
+      for (const file of staleFiles) {
+        // Get all embeddings for this file, grouped by creation time
+        const embeddings = this.db!.prepare(
+          `
+          SELECT
+            id,
+            chunk_index,
+            hash,
+            DATE(created_at) as date_created,
+            created_at
+          FROM embeddings
+          WHERE project_id = ? AND file_id = ?
+          ORDER BY created_at DESC, chunk_index ASC
+        `
+        ).all(projectId, file.file_id) as Array<{
+          id: string;
+          chunk_index: number;
+          hash: string;
+          date_created: string;
+          created_at: string;
+        }>;
+
+        // Group by creation date
+        const generationsMap = new Map<
+          string,
+          Array<{
+            id: string;
+            chunkIndex: number;
+            hash: string;
+            createdAt: Date;
+          }>
+        >();
+
+        for (const emb of embeddings) {
+          const dateKey = emb.date_created;
+          if (!generationsMap.has(dateKey)) {
+            generationsMap.set(dateKey, []);
+          }
+          generationsMap.get(dateKey)!.push({
+            id: emb.id,
+            chunkIndex: emb.chunk_index,
+            hash: emb.hash,
+            createdAt: new Date(emb.created_at),
+          });
+        }
+
+        const generations = Array.from(generationsMap.entries())
+          .map(([dateStr, embs]) => ({
+            createdAt: embs[0].createdAt, // All have same date
+            chunkCount: embs.length,
+            embeddings: embs,
+          }))
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()); // Most recent first
+
+        result.push({
+          fileId: file.file_id,
+          filePath: file.file_path,
+          generationCount: generations.length,
+          generations,
+        });
+      }
+
+      return result;
+    } catch (err) {
+      logger.error('❌ Failed to find stale file embeddings', {
+        projectId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new Error(
+        `Failed to find stale file embeddings for project ${projectId}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Clean up stale file embeddings, keeping only the most recent generation for each file
+   */
+  async cleanupStaleFileEmbeddings(projectId: string): Promise<{
+    staleFilesFound: number;
+    chunksDeleted: number;
+    spaceSaved: number;
+  }> {
+    if (!this.initialized) {
+      await this.initializeDatabase();
+    }
+
+    try {
+      const staleFiles = await this.findStaleFileEmbeddings(projectId);
+
+      if (staleFiles.length === 0) {
+        return { staleFilesFound: 0, chunksDeleted: 0, spaceSaved: 0 };
+      }
+
+      let totalDeleted = 0;
+      let totalSpaceSaved = 0;
+
+      for (const file of staleFiles) {
+        // Keep only the most recent generation (first in sorted list)
+        const toKeep = file.generations[0];
+        const toDeleteGenerations = file.generations.slice(1);
+
+        // Collect all embeddings to delete from older generations
+        const toDeleteIds: string[] = [];
+        for (const generation of toDeleteGenerations) {
+          toDeleteIds.push(...generation.embeddings.map(e => e.id));
+        }
+
+        if (toDeleteIds.length > 0) {
+          // Delete the older generations
+          const placeholders = toDeleteIds.map(() => '?').join(',');
+          this.db!.prepare(`DELETE FROM embeddings WHERE id IN (${placeholders})`).run(
+            ...toDeleteIds
+          );
+
+          totalDeleted += toDeleteIds.length;
+
+          // Estimate space saved (rough calculation: embedding vector + metadata)
+          // Assuming ~400 dimensions * 4 bytes per float + metadata overhead
+          const estimatedSizePerChunk = 384 * 4 + 1024; // ~2KB per chunk
+          totalSpaceSaved += toDeleteIds.length * estimatedSizePerChunk;
+
+          logger.info('🧹 Cleaned up stale file embeddings', {
+            filePath: file.filePath,
+            keptGeneration: toKeep.createdAt.toISOString(),
+            keptChunks: toKeep.chunkCount,
+            deletedGenerations: toDeleteGenerations.length,
+            deletedChunks: toDeleteIds.length,
+            totalGenerations: file.generationCount,
+          });
+        }
+      }
+
+      logger.info('✅ Stale file embedding cleanup completed', {
+        projectId,
+        staleFilesFound: staleFiles.length,
+        chunksDeleted: totalDeleted,
+        estimatedSpaceSaved: this.formatQuotaSize(totalSpaceSaved),
+      });
+
+      return {
+        staleFilesFound: staleFiles.length,
+        chunksDeleted: totalDeleted,
+        spaceSaved: totalSpaceSaved,
+      };
+    } catch (err) {
+      logger.error('❌ Failed to cleanup stale file embeddings', {
+        projectId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new Error(
+        `Failed to cleanup stale file embeddings for project ${projectId}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Legacy method for backward compatibility - now delegates to cleanupStaleFileEmbeddings
+   * @deprecated Use cleanupStaleFileEmbeddings instead
+   */
+  async cleanupDuplicateEmbeddings(projectId: string): Promise<{
+    duplicatesFound: number;
+    chunksDeleted: number;
+    spaceSaved: number;
+  }> {
+    logger.warn(
+      '⚠️ cleanupDuplicateEmbeddings is deprecated, use cleanupStaleFileEmbeddings instead'
+    );
+    const result = await this.cleanupStaleFileEmbeddings(projectId);
+    return {
+      duplicatesFound: result.staleFilesFound, // Map to old property name
+      chunksDeleted: result.chunksDeleted,
+      spaceSaved: result.spaceSaved,
+    };
+  }
+
+  /**
+   * Legacy method for backward compatibility - now delegates to findStaleFileEmbeddings
+   * @deprecated Use findStaleFileEmbeddings instead
+   */
+  async findDuplicateEmbeddings(projectId: string): Promise<
+    Array<{
+      hash: string;
+      count: number;
+      embeddings: Array<{ id: string; createdAt: Date; filePath: string; chunkIndex: number }>;
+    }>
+  > {
+    logger.warn('⚠️ findDuplicateEmbeddings is deprecated, use findStaleFileEmbeddings instead');
+
+    const staleFiles = await this.findStaleFileEmbeddings(projectId);
+
+    // Convert to old format for backward compatibility
+    return staleFiles.map(file => ({
+      hash: `file-${file.fileId}`, // Fake hash for compatibility
+      count: file.generations.reduce((sum, gen) => sum + gen.chunkCount, 0),
+      embeddings: file.generations.flatMap(gen =>
+        gen.embeddings.map(e => ({
+          id: e.id,
+          createdAt: gen.createdAt,
+          filePath: file.filePath,
+          chunkIndex: e.chunkIndex,
+        }))
+      ),
+    }));
   }
 
   /**
@@ -2326,17 +2492,15 @@ export class LocalEmbeddingStorage {
    */
   async close(): Promise<void> {
     if (this.db) {
-      return new Promise(resolve => {
-        this.db!.close(err => {
-          if (err) {
-            logger.error('❌ Error closing database', { error: err.message });
-          } else {
-            logger.info('✅ Database connection closed');
-          }
-          this.initialized = false;
-          resolve();
+      try {
+        this.db.close();
+        logger.info('✅ Database connection closed');
+      } catch (err) {
+        logger.error('❌ Error closing database', {
+          error: err instanceof Error ? err.message : String(err),
         });
-      });
+      }
+      this.initialized = false;
     }
   }
 
@@ -2419,47 +2583,43 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
+    try {
       // Get storage usage for project
-      this.db.get(
-        `
+      const row = this.db
+        .prepare(
+          `
         SELECT
           COUNT(*) as embedding_count,
           COUNT(DISTINCT file_id) as file_count,
           SUM(LENGTH(embedding)) as total_bytes
         FROM embeddings
         WHERE project_id = ?
-      `,
-        [projectId],
-        (err, row: any) => {
-          if (err) {
-            reject(err);
-            return;
-          }
+      `
+        )
+        .get(projectId) as any;
 
-          const quotaBytes = this.getQuotaForProject(projectId);
-          const totalBytes = row?.total_bytes || 0;
-          const embeddingCount = row?.embedding_count || 0;
-          const fileCount = row?.file_count || 0;
-          const usagePercentage = quotaBytes > 0 ? (totalBytes / quotaBytes) * 100 : 0;
-          const remainingBytes = Math.max(0, quotaBytes - totalBytes);
+      const quotaBytes = this.getQuotaForProject(projectId);
+      const totalBytes = row?.total_bytes || 0;
+      const embeddingCount = row?.embedding_count || 0;
+      const fileCount = row?.file_count || 0;
+      const usagePercentage = quotaBytes > 0 ? (totalBytes / quotaBytes) * 100 : 0;
+      const remainingBytes = Math.max(0, quotaBytes - totalBytes);
 
-          resolve({
-            totalBytes,
-            embeddingCount,
-            fileCount,
-            quotaBytes,
-            usagePercentage,
-            remainingBytes,
-          });
-        }
-      );
-    });
+      return {
+        totalBytes,
+        embeddingCount,
+        fileCount,
+        quotaBytes,
+        usagePercentage,
+        remainingBytes,
+      };
+    } catch (err) {
+      throw err;
+    }
   }
 
   /**
@@ -2520,83 +2680,73 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
+    try {
       let cleanedCount = 0;
       let totalCleanedSize = 0;
 
       // Get embeddings ordered by creation time (oldest first)
-      this.db.all(
-        `
+      const rows = this.db
+        .prepare(
+          `
         SELECT id, LENGTH(embedding) as size, created_at
         FROM embeddings
         WHERE project_id = ?
         ORDER BY created_at ASC
-      `,
-        [projectId],
-        (err, rows: any[]) => {
-          if (err) {
-            reject(err);
-            return;
-          }
+      `
+        )
+        .all(projectId) as { id: string; size: number; created_at: string }[];
 
-          const toDelete: string[] = [];
-          for (const row of rows) {
-            toDelete.push(row.id);
-            totalCleanedSize += row.size;
-            cleanedCount++;
+      const toDelete: string[] = [];
+      for (const row of rows) {
+        toDelete.push(row.id);
+        totalCleanedSize += row.size;
+        cleanedCount++;
 
-            if (totalCleanedSize >= targetReduction) {
-              break;
-            }
-          }
-
-          if (toDelete.length === 0) {
-            resolve(0);
-            return;
-          }
-
-          // Delete old embeddings
-          const placeholders = toDelete.map(() => '?').join(',');
-          this.db!.run(
-            `DELETE FROM embeddings WHERE id IN (${placeholders})`,
-            toDelete,
-            (deleteErr: Error | null) => {
-              if (deleteErr) {
-                reject(deleteErr);
-                return;
-              }
-
-              logger.info('🧹 Cleaned up old embeddings', {
-                projectId,
-                cleanedCount,
-                cleanedSize: this.formatQuotaSize(totalCleanedSize),
-                targetReduction: this.formatQuotaSize(targetReduction),
-              });
-
-              // Update project stats
-              this.db!.run(
-                'UPDATE project_stats SET total_chunks = (SELECT COUNT(*) FROM embeddings WHERE project_id = ?), total_files = (SELECT COUNT(DISTINCT file_id) FROM embeddings WHERE project_id = ?), last_updated = CURRENT_TIMESTAMP WHERE project_id = ?',
-                [projectId, projectId, projectId],
-                (statsErr: Error | null) => {
-                  if (statsErr) {
-                    logger.warn('⚠️ Failed to update project stats after cleanup', {
-                      error: statsErr.message,
-                    });
-                  }
-                }
-              );
-
-              resolve(cleanedCount);
-            }
-          );
+        if (totalCleanedSize >= targetReduction) {
+          break;
         }
-      );
-    });
+      }
+
+      if (toDelete.length === 0) {
+        return 0;
+      }
+
+      // Delete old embeddings
+      const placeholders = toDelete.map(() => '?').join(',');
+      this.db.prepare(`DELETE FROM embeddings WHERE id IN (${placeholders})`).run(...toDelete);
+
+      logger.info('🧹 Cleaned up old embeddings', {
+        projectId,
+        cleanedCount,
+        cleanedSize: this.formatQuotaSize(totalCleanedSize),
+        targetReduction: this.formatQuotaSize(targetReduction),
+      });
+
+      // Update project stats
+      try {
+        this.db
+          .prepare(
+            'UPDATE project_stats SET total_chunks = (SELECT COUNT(*) FROM embeddings WHERE project_id = ?), total_files = (SELECT COUNT(DISTINCT file_id) FROM embeddings WHERE project_id = ?), last_updated = CURRENT_TIMESTAMP WHERE project_id = ?'
+          )
+          .run(projectId, projectId, projectId);
+      } catch (statsErr) {
+        logger.warn('⚠️ Failed to update project stats after cleanup', {
+          error: statsErr instanceof Error ? statsErr.message : String(statsErr),
+        });
+      }
+
+      return cleanedCount;
+    } catch (err) {
+      logger.error('❌ Failed to cleanup old embeddings', {
+        error: err instanceof Error ? err.message : String(err),
+        projectId,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -2674,12 +2824,11 @@ export class LocalEmbeddingStorage {
       await this.initializeDatabase();
     }
 
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        reject(new Error('Database not initialized'));
-        return;
-      }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
 
+    try {
       let query = `
         SELECT
           COUNT(*) as total_embeddings,
@@ -2695,79 +2844,68 @@ export class LocalEmbeddingStorage {
         params.push(projectId);
       }
 
-      this.db!.get(query, params, (err, globalStats: any) => {
-        if (err) {
-          reject(err);
-          return;
-        }
+      const globalStats = this.db.prepare(query).get(...params) as any;
 
-        // Calculate storage savings estimate
-        const totalChunks = globalStats.total_embeddings;
-        const quantizedChunks = globalStats.quantized_embeddings;
-        const float32Chunks = globalStats.float32_embeddings;
+      // Calculate storage savings estimate
+      const totalChunks = globalStats.total_embeddings;
+      const quantizedChunks = globalStats.quantized_embeddings;
+      const float32Chunks = globalStats.float32_embeddings;
 
-        // Estimate storage: float32 = ~4 bytes per dimension, int8 = ~1 byte per dimension
-        // Average embedding dimension estimate (conservative)
-        const avgDimensions = 1536; // Conservative estimate
-        const float32SizePerEmbedding = avgDimensions * 4;
-        const int8SizePerEmbedding = avgDimensions * 1;
+      // Estimate storage: float32 = ~4 bytes per dimension, int8 = ~1 byte per dimension
+      // Average embedding dimension estimate (conservative)
+      const avgDimensions = 1536; // Conservative estimate
+      const float32SizePerEmbedding = avgDimensions * 4;
+      const int8SizePerEmbedding = avgDimensions * 1;
 
-        const totalFloat32Size = float32Chunks * float32SizePerEmbedding;
-        const totalInt8Size = quantizedChunks * int8SizePerEmbedding;
-        const totalActualSize = totalFloat32Size + totalInt8Size;
+      const totalFloat32Size = float32Chunks * float32SizePerEmbedding;
+      const totalInt8Size = quantizedChunks * int8SizePerEmbedding;
+      const totalActualSize = totalFloat32Size + totalInt8Size;
 
-        const originalSizeIfAllFloat32 = totalChunks * float32SizePerEmbedding;
-        const storageSavings = originalSizeIfAllFloat32 - totalActualSize;
-        const compressionRatio = totalChunks > 0 ? originalSizeIfAllFloat32 / totalActualSize : 1;
+      const originalSizeIfAllFloat32 = totalChunks * float32SizePerEmbedding;
+      const storageSavings = originalSizeIfAllFloat32 - totalActualSize;
+      const compressionRatio = totalChunks > 0 ? originalSizeIfAllFloat32 / totalActualSize : 1;
 
-        let projectStats = undefined;
-        if (projectId) {
-          this.db!.get(
-            `
+      let projectStats = undefined;
+      if (projectId) {
+        try {
+          const projStats = this.db
+            .prepare(
+              `
             SELECT
               COUNT(*) as total_chunks,
               COUNT(CASE WHEN metadata_embedding_format = 'int8' THEN 1 END) as quantized_chunks,
               COUNT(CASE WHEN metadata_embedding_format = 'float32' OR metadata_embedding_format IS NULL THEN 1 END) as float32_chunks
             FROM embeddings
             WHERE project_id = ?
-          `,
-            [projectId],
-            (projErr, projStats: any) => {
-              if (projErr) {
-                reject(projErr);
-                return;
-              }
+          `
+            )
+            .get(projectId) as any;
 
-              resolve({
-                totalEmbeddings: globalStats.total_embeddings,
-                totalProjects: 0, // Would need additional query for this
-                quantizedEmbeddings: globalStats.quantized_embeddings,
-                float32Embeddings: globalStats.float32_embeddings,
-                storageSavings,
-                averageCompressionRatio: compressionRatio,
-                projectStats: projStats
-                  ? {
-                      totalChunks: projStats.total_chunks,
-                      totalFiles: projStats.total_chunks, // Approximation
-                      quantizedChunks: projStats.quantized_chunks,
-                      float32Chunks: projStats.float32_chunks,
-                    }
-                  : undefined,
-              });
-            }
-          );
-        } else {
-          resolve({
-            totalEmbeddings: globalStats.total_embeddings,
-            totalProjects: 0, // Would need additional query for this
-            quantizedEmbeddings: globalStats.quantized_embeddings,
-            float32Embeddings: globalStats.float32_embeddings,
-            storageSavings,
-            averageCompressionRatio: compressionRatio,
-          });
+          projectStats = projStats
+            ? {
+                totalChunks: projStats.total_chunks,
+                totalFiles: projStats.total_chunks, // Approximation
+                quantizedChunks: projStats.quantized_chunks,
+                float32Chunks: projStats.float32_chunks,
+              }
+            : undefined;
+        } catch (projErr) {
+          throw projErr;
         }
-      });
-    });
+      }
+
+      return {
+        totalEmbeddings: globalStats.total_embeddings,
+        totalProjects: 0, // Would need additional query for this
+        quantizedEmbeddings: globalStats.quantized_embeddings,
+        float32Embeddings: globalStats.float32_embeddings,
+        storageSavings,
+        averageCompressionRatio: compressionRatio,
+        projectStats,
+      };
+    } catch (err) {
+      throw err;
+    }
   }
 }
 

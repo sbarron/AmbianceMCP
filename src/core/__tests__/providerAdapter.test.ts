@@ -1,6 +1,6 @@
 import { generate } from '../providerAdapter';
 
-var mockRegistry: {
+let mockRegistry: {
   chatCreate: jest.Mock;
   responsesCreate: jest.Mock;
   responsesStream: jest.Mock;

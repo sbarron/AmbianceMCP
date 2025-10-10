@@ -41,7 +41,10 @@ export function createInsightsSystemPrompt(
     prompt += ' Include specific, actionable recommendations.';
   }
 
-  return prompt + ' Structure your analysis clearly and provide practical insights.';
+  return (
+    prompt +
+    ' Structure your analysis clearly and provide practical insights. Avoid starting responses with affirmative words like "Certainly!" or "Of course!".'
+  );
 }
 
 export function createInsightsUserPrompt(

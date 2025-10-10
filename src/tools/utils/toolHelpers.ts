@@ -91,6 +91,46 @@ export function truncateToTokens(text: string, maxTokens: number): string {
 }
 
 /**
+ * Convert a glob-style pattern to a regular expression that matches POSIX-style paths.
+ * Supports `*`, `?`, and `**` wildcards while escaping other regex metacharacters.
+ */
+export function globToRegExp(pattern: string): RegExp {
+  const normalized = (pattern || '').replace(/\\/g, '/');
+
+  const escapeRegex = (value: string) => value.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+
+  const withEscaped = escapeRegex(normalized)
+    .replace(/\*\*/g, '__DOUBLE_STAR__')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '.');
+
+  const regexSource = `^${withEscaped.replace(/__DOUBLE_STAR__/g, '.*')}$`;
+
+  return new RegExp(regexSource);
+}
+
+/**
+ * Compile an array of glob-style exclude patterns into regular expressions.
+ */
+export function compileExcludePatterns(patterns: string[] = []): RegExp[] {
+  return patterns
+    .filter(pattern => typeof pattern === 'string' && pattern.trim().length > 0)
+    .map(globToRegExp);
+}
+
+/**
+ * Determine whether a relative path should be excluded based on compiled patterns.
+ */
+export function isExcludedPath(relativePath: string, excludeRegexes: RegExp[]): boolean {
+  if (!excludeRegexes.length) {
+    return false;
+  }
+
+  const normalized = relativePath.replace(/\\/g, '/');
+  return excludeRegexes.some(regex => regex.test(normalized));
+}
+
+/**
  * Cleanup function (no-op for compatibility)
  */
 export function cleanupLightweightTools(): void {

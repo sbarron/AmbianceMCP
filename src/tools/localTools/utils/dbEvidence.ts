@@ -262,6 +262,7 @@ export function detectDatabaseEngine(text: string): { engine: string; evidence: 
       /MongoClient|mongoose/i,
     ],
     redis: [/from\s+['"](?:io)?redis['"]|import.*redis/i, /REDIS_URL/i, /createClient.*redis/i],
+    'vector-chroma': [/from\s+['"]chromadb['"]|import.*chromadb/i, /new\s+ChromaClient/i],
   };
 
   const evidence: Evidence[] = collectDbEvidence(text);

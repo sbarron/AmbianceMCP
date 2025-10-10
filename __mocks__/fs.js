@@ -226,8 +226,17 @@ const statSync = jest.fn().mockReturnValue({
   mtime: new Date()
 });
 
-const existsSync = jest.fn().mockReturnValue(true);
-const mkdirSync = jest.fn().mockReturnValue(undefined);
+const existsSync = jest.fn().mockImplementation((path) => {
+  // Return true for directories, false for files that don't exist
+  if (path.includes('test-storage') || path.includes('test.db') || path.includes('.ambiance')) {
+    return false; // Database files don't exist initially
+  }
+  return true; // Most other paths exist
+});
+const mkdirSync = jest.fn().mockImplementation((path, options) => {
+  // Mock successful directory creation
+  return undefined;
+});
 const rmSync = jest.fn().mockReturnValue(undefined);
 const readdirSync = jest.fn().mockReturnValue(['test1.ts', 'test2.ts']);
 

@@ -27,6 +27,8 @@ import {
   ContextItem,
   ValidationError,
 } from '../../core/validation';
+import { compileExcludePatterns, isExcludedPath } from '../utils/toolHelpers';
+import { UNIVERSAL_NEGATIVES } from '../localTools/enhancedLocalContext';
 
 // Global OpenAI service instance
 let openaiService: OpenAIService | null = null;
@@ -177,6 +179,12 @@ Accepts absolute paths or relative paths (when workspace can be detected).
         maximum: 50,
         description:
           'Maximum number of semantically similar code chunks to retrieve. Higher values (20-40) provide broader coverage for exploration; lower values (5-10) focus on highly relevant matches. Default 10 balances breadth with AI analysis cost.',
+      },
+      excludePatterns: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Additional patterns to exclude from analysis (e.g., ["*.md", "docs/**", "*.test.js"])',
       },
       generateEmbeddingsIfMissing: {
         type: 'boolean',
@@ -432,8 +440,11 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
       useEmbeddings = true,
       embeddingSimilarityThreshold = 0.2,
       maxSimilarChunks = 10,
+      excludePatterns = [],
       generateEmbeddingsIfMissing = true,
     } = args;
+
+    const excludeRegexes = compileExcludePatterns([...UNIVERSAL_NEGATIVES, ...excludePatterns]);
 
     // Validate that projectPath is provided and is absolute
     if (!projectPath) {
@@ -476,6 +487,7 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
           query,
           taskType,
           format: 'structured', // Always use structured for AI processing
+          excludePatterns,
           useEmbeddings: true,
           embeddingSimilarityThreshold,
           maxSimilarChunks,
@@ -609,8 +621,74 @@ export async function handleAISemanticCompact(args: any): Promise<any> {
           : 'Enhanced mode failed',
       });
 
-      const compactor = new SemanticCompactor(validatedProjectPath);
+      // Handle exclude patterns for fallback compactor
+      let analysisPath = validatedProjectPath;
+      let cleanupTempDir: (() => Promise<void>) | null = null;
+
+      if (excludeRegexes.length > 0) {
+        const fs = require('fs').promises;
+        const path = require('path');
+        const os = require('os');
+        const { FileDiscovery } = await import('../../core/compactor/fileDiscovery.js');
+
+        const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-context-fallback-'));
+        logger.info('📁 Creating temporary directory for AI context exclude pattern filtering', {
+          tempDir,
+        });
+
+        try {
+          const fileDiscovery = new FileDiscovery(validatedProjectPath, {
+            maxFileSize: 200000,
+          });
+
+          let allFiles = await fileDiscovery.discoverFiles();
+
+          allFiles = allFiles.filter(file => !isExcludedPath(file.relPath, excludeRegexes));
+
+          logger.info('📊 Applied exclude patterns to AI context fallback', {
+            filteredCount: allFiles.length,
+            excludePatterns,
+          });
+
+          // Copy filtered files to temp directory
+          for (const file of allFiles) {
+            const sourcePath = file.absPath;
+            const relativePath = path.relative(validatedProjectPath, sourcePath);
+            const destPath = path.join(tempDir, relativePath);
+
+            await fs.mkdir(path.dirname(destPath), { recursive: true });
+            await fs.copyFile(sourcePath, destPath);
+          }
+
+          analysisPath = tempDir;
+          cleanupTempDir = async () => {
+            try {
+              await fs.rm(tempDir, { recursive: true, force: true });
+              logger.debug('🧹 Cleaned up AI context temporary directory', { tempDir });
+            } catch (error) {
+              logger.warn('Failed to cleanup AI context temporary directory', { tempDir, error });
+            }
+          };
+        } catch (error) {
+          // Clean up temp directory on error
+          try {
+            await fs.rm(tempDir, { recursive: true, force: true });
+          } catch {}
+          throw error;
+        }
+      }
+
+      const compactor = new SemanticCompactor(analysisPath);
       compactedProject = await compactor.compact();
+
+      // Clean up temporary directory if created
+      if (cleanupTempDir) {
+        try {
+          await cleanupTempDir();
+        } catch (cleanupError) {
+          logger.warn('Failed to cleanup AI context temporary directory', { error: cleanupError });
+        }
+      }
     }
 
     logger.info('📊 SemanticCompactor results', {

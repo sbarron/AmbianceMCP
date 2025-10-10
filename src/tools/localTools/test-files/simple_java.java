@@ -23,3 +23,4 @@ public class MyClass {
         System.out.println(obj.sayHello());
     }
 }
+

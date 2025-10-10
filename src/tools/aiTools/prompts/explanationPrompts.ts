@@ -28,7 +28,10 @@ export function createExplanationSystemPrompt(
     prompt += ' Include constructive suggestions for improvement where appropriate.';
   }
 
-  return prompt + ' Be concise but thorough.';
+  return (
+    prompt +
+    ' Be concise but thorough. Avoid starting responses with affirmative words like "Certainly!" or "Of course!".'
+  );
 }
 
 export function createExplanationUserPrompt(

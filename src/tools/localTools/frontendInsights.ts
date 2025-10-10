@@ -10,12 +10,45 @@
 import { z } from 'zod';
 import { logger } from '../../utils/logger';
 import { validateAndResolvePath } from '../utils/pathUtils';
-import { FileDiscovery } from '../../core/compactor/fileDiscovery';
+import { FileDiscovery, FileInfo } from '../../core/compactor/fileDiscovery';
 import { formatFrontendInsights } from './formatters/frontendInsightsFormatters';
 import { analyzeRoutes, analyzeBoundaries } from './analyzers/frontend/router';
 import { analyzeComponents } from './analyzers/frontend/components';
 import { analyzeDataFlow } from './analyzers/frontend/dataFlow';
 import * as path from 'path';
+
+/**
+ * Analyze file composition by type
+ */
+function analyzeFileComposition(
+  allFiles: FileInfo[],
+  frontendFiles: FileInfo[]
+): FrontendInsights['summary']['fileComposition'] {
+  const byType: Record<string, number> = {};
+  const filteredOut: Record<string, number> = {};
+
+  // Count all files by extension
+  for (const file of allFiles) {
+    const ext = file.ext || path.extname(file.relPath).toLowerCase() || 'no-extension';
+    byType[ext] = (byType[ext] || 0) + 1;
+  }
+
+  // Count filtered out files (not in frontendFiles)
+  const frontendFileSet = new Set(frontendFiles.map(f => f.absPath));
+  for (const file of allFiles) {
+    if (!frontendFileSet.has(file.absPath)) {
+      const ext = file.ext || path.extname(file.relPath).toLowerCase() || 'no-extension';
+      filteredOut[ext] = (filteredOut[ext] || 0) + 1;
+    }
+  }
+
+  return {
+    totalFiles: allFiles.length,
+    byType,
+    analyzedFiles: frontendFiles.length,
+    filteredOut,
+  };
+}
 
 /**
  * Zod schema for frontend insights input validation
@@ -168,17 +201,25 @@ async function handleFrontendInsights(args: any): Promise<any> {
     const fileDiscovery = new FileDiscovery(resolvedProjectPath);
     const allFiles = await fileDiscovery.discoverFiles();
 
-    // Filter files for frontend types (including HTML and other relevant files)
-    const frontendFiles = allFiles.filter(
-      file =>
-        /\.(ts|tsx|js|jsx|vue|svelte|html)$/.test(file.relPath) &&
-        !file.relPath.includes('node_modules') &&
-        !file.relPath.includes('dist') &&
-        !file.relPath.includes('.next') &&
-        !file.relPath.includes('build')
-    );
+    // Filter files for frontend types (including HTML, CSS, config files, and other relevant files)
+    const frontendFiles = allFiles.filter(file => {
+      const isFrontendCode = /\.(ts|tsx|js|jsx|vue|svelte|html|css|scss|sass|less|astro|mdx)$/.test(
+        file.relPath
+      );
+      const isConfigFile = file.relPath.includes('.config.') || file.relPath.includes('config.');
+      const isExcluded =
+        file.relPath.includes('node_modules') ||
+        file.relPath.includes('dist') ||
+        file.relPath.includes('.next') ||
+        file.relPath.includes('build');
+
+      return (isFrontendCode || isConfigFile) && !isExcluded;
+    });
 
     logger.info(`📁 Found ${frontendFiles.length} frontend files (${allFiles.length} total)`);
+
+    // Analyze file composition
+    const fileComposition = analyzeFileComposition(allFiles, frontendFiles);
 
     // Auto-detect the correct app directory if subtree is default or doesn't exist
     let effectiveSubtree = subtree;
@@ -251,6 +292,7 @@ async function handleFrontendInsights(args: any): Promise<any> {
         stateStores: [],
         dataLibraries: [],
         designSystem: [],
+        fileComposition,
       },
       routes: {
         pages: [],
@@ -451,6 +493,12 @@ export interface FrontendInsights {
     stateStores: string[];
     dataLibraries: string[];
     designSystem: string[];
+    fileComposition: {
+      totalFiles: number;
+      byType: Record<string, number>;
+      analyzedFiles: number;
+      filteredOut: Record<string, number>;
+    };
   };
   routes: {
     pages: Array<{

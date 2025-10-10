@@ -17,7 +17,46 @@ import {
   formatEnhancedMarkdown,
 } from './formatters/projectHintsFormatters';
 import { buildEnhancedProjectSummary, generateAnswerDraft } from './enhancedHints';
-import { FileDiscovery } from '../../core/compactor/fileDiscovery';
+import { FileDiscovery, FileInfo } from '../../core/compactor/fileDiscovery';
+import * as path from 'path';
+
+/**
+ * Analyze file composition by type across the project
+ */
+function analyzeFileComposition(
+  allFiles: FileInfo[],
+  analyzedFiles: FileInfo[]
+): {
+  totalFiles: number;
+  byType: Record<string, number>;
+  analyzedFiles: number;
+  filteredOut: Record<string, number>;
+} {
+  const byType: Record<string, number> = {};
+  const filteredOut: Record<string, number> = {};
+
+  // Count all files by extension
+  for (const file of allFiles) {
+    const ext = file.ext || path.extname(file.relPath).toLowerCase() || 'no-extension';
+    byType[ext] = (byType[ext] || 0) + 1;
+  }
+
+  // Count filtered out files (not in analyzedFiles)
+  const analyzedFileSet = new Set(analyzedFiles.map(f => f.absPath));
+  for (const file of allFiles) {
+    if (!analyzedFileSet.has(file.absPath)) {
+      const ext = file.ext || path.extname(file.relPath).toLowerCase() || 'no-extension';
+      filteredOut[ext] = (filteredOut[ext] || 0) + 1;
+    }
+  }
+
+  return {
+    totalFiles: allFiles.length,
+    byType,
+    analyzedFiles: analyzedFiles.length,
+    filteredOut,
+  };
+}
 
 /**
  * Tool definition for local project hints generation
@@ -179,6 +218,9 @@ export async function handleProjectHints(args: any): Promise<any> {
         const allFiles = await fileDiscovery.discoverFiles();
         const limitedFiles = fileDiscovery.sortByRelevance(allFiles).slice(0, maxFiles);
 
+        // Analyze file composition across the project
+        const fileCompositionStructured = analyzeFileComposition(allFiles, limitedFiles);
+
         const enhancedSummary = await buildEnhancedProjectSummary(
           resolvedProjectPath,
           limitedFiles,
@@ -208,6 +250,7 @@ export async function handleProjectHints(args: any): Promise<any> {
             hasQuery: !!query,
             enhanced: true,
             embeddingAssisted: hintsGenerator['shouldUseEmbeddingAssistedHints']?.() || false,
+            fileComposition: fileCompositionStructured,
           },
         };
       } else {
@@ -215,6 +258,19 @@ export async function handleProjectHints(args: any): Promise<any> {
         logger.info('📝 Using local formatting for', { format });
         formattedHints = formatProjectHints(hints, format);
       }
+
+      // Analyze file composition for metadata
+      const fileDiscoveryForComposition = new FileDiscovery(resolvedProjectPath, {
+        maxFileSize: maxFileSizeForSymbols,
+      });
+      const allFilesForComposition = await fileDiscoveryForComposition.discoverFiles();
+      const limitedFilesForComposition = fileDiscoveryForComposition
+        .sortByRelevance(allFilesForComposition)
+        .slice(0, maxFiles);
+      const fileComposition = analyzeFileComposition(
+        allFilesForComposition,
+        limitedFilesForComposition
+      );
 
       return {
         success: true,
@@ -229,6 +285,7 @@ export async function handleProjectHints(args: any): Promise<any> {
           codebaseSize: hints.codebaseSize,
           enhanced: false,
           embeddingAssisted: hintsGenerator['shouldUseEmbeddingAssistedHints']?.() || false,
+          fileComposition,
         },
       };
     }

@@ -306,7 +306,12 @@ function extractSymbolsFromAst(ast: any, file: FileInfo): ExtractedSymbol[] {
             }
           },
         } as any);
-      } catch {}
+      } catch (error) {
+        logger.debug('Failed to analyze default export return value', {
+          file: file.relPath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       symbols.push({
         name: 'default',
         kind: 'export',

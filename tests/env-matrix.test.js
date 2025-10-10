@@ -48,10 +48,11 @@ describe('Environment Matrix Coverage', () => {
 
     const res = await handleSemanticCompact({
       query: 'project overview and entrypoints',
-      // Intentionally omit projectPath to rely on WORKSPACE_FOLDER
+      // Explicit projectPath matches resolved workspace
       format: 'compact',
       useEmbeddings: false,
       maxTokens: 1500,
+      projectPath: process.env.WORKSPACE_FOLDER,
     });
 
     expect(res).toBeDefined();
@@ -75,6 +76,7 @@ describe('Environment Matrix Coverage', () => {
       // Do not generate embeddings in tests (offline)
       generateEmbeddingsIfMissing: false,
       maxTokens: 1500,
+      projectPath: process.cwd(),
     });
 
     expect(res).toBeDefined();
@@ -96,6 +98,7 @@ describe('Environment Matrix Coverage', () => {
       format: 'compact',
       useEmbeddings: false,
       maxTokens: 1200,
+      projectPath: process.cwd(),
     });
 
     expect(res).toBeDefined();
@@ -114,6 +117,7 @@ describe('Environment Matrix Coverage', () => {
       format: 'compact',
       useEmbeddings: false,
       maxTokens: 1200,
+      projectPath: process.cwd(),
     });
 
     expect(res).toBeDefined();

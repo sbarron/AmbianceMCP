@@ -8,7 +8,13 @@ yarn-error.log*
 dist/
 build/
 *.tsbuildinfo
-*.tgz
+
+# Development files
+development/mcp-debug.log
+development/tests/temp/
+development/tests/*.tmp
+development/tests/coverage/
+development/
 
 # Environment variables
 .env
@@ -23,7 +29,10 @@ build/
 test-storage/
 *.db
 *.sqlite
-*.sqlite3 
+*.sqlite3
+
+# Instance lock files (allow multiple MCP server instances)
+*.lock 
 
 # IDE files
 .vscode/
@@ -36,7 +45,20 @@ test-storage/
 .DS_Store
 Thumbs.db
 
+CHANGELOG.md
+CLAUDE.md
+QWEN.md
+nextsteps.md
+agents.md
+Reference_Documents/
+
 *.ps1
 *.bat
 
+Future_Plan.md
+Future_Plan_grok.md
+Final_Release_Plan.md
+Reference_Documents/
+Reference_Documents/API_ENDPOINTS_REFERENCE.md
+Reference_Documents/future.md
 

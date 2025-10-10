@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
+import { detectDatabaseEngine, collectDbEvidence } from '../../utils/dbEvidence';
 import { FileInfo } from '../../../core/compactor/fileDiscovery';
 
 // Mock implementation of extractRoutesFromContent for testing
@@ -160,6 +161,44 @@ describe('Evidence-based Confidence Scoring', () => {
     const partialHits = hits.slice(0, 1);
     const partialConfidence = Math.min(1, partialHits.length / threshold);
     expect(partialConfidence).toBeCloseTo(0.33, 2); // 1/3 ≈ 0.33
+  });
+});
+
+describe('Database engine detection', () => {
+  it('detects PostgreSQL via imports and SQL evidence', () => {
+    const content = `
+      import { Pool } from 'pg';
+      export const db = new Pool({ connectionString: process.env.DATABASE_URL });
+      await db.query('SELECT * FROM users');
+    `;
+
+    const { engine, evidence } = detectDatabaseEngine(content);
+    expect(engine).toBe('postgresql');
+    expect(evidence.some(item => item.match.includes('import { Pool }'))).toBe(true);
+  });
+
+  it('detects vector DBs such as ChromaJS', () => {
+    const content = `
+      import { ChromaClient } from 'chromadb';
+      const client = new ChromaClient();
+      await client.listCollections();
+    `;
+
+    const { engine, evidence } = detectDatabaseEngine(content);
+    expect(engine).toBe('vector-chroma');
+    expect(evidence.some(item => item.match.includes('chromadb'))).toBe(true);
+  });
+
+  it('returns unknown when no evidence is found', () => {
+    const content = `
+      export function helper() {
+        return 'no database here';
+      }
+    `;
+
+    const { engine, evidence } = detectDatabaseEngine(content);
+    expect(engine).toBe('unknown');
+    expect(evidence).toHaveLength(0);
   });
 });
 

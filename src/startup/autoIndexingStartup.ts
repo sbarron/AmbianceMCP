@@ -18,6 +18,9 @@ import { AutomaticIndexer } from '../local/automaticIndexer';
 import { logger } from '../utils/logger';
 import { apiClient } from '../client/apiClient';
 import { ProjectIdentifier } from '../local/projectIdentifier';
+import * as fs from 'fs';
+import * as path from 'path';
+
 export class AutoIndexingStartup {
   private static instance: AutoIndexingStartup;
   private static initializing: boolean = false;
@@ -53,9 +56,14 @@ export class AutoIndexingStartup {
     AutoIndexingStartup.initializing = true;
     logger.info('🚀 Starting automatic indexing startup sequence');
 
-    // Defer any authentication or filesystem work until workspace has been explicitly configured
+    // Auto-initialize workspace if WORKSPACE_FOLDER is set but WORKSPACE_INITIALIZED isn't
     const workspaceInitialized = process.env.WORKSPACE_INITIALIZED === 'true';
-    if (!workspaceInitialized) {
+    const workspaceFolder = process.env.WORKSPACE_FOLDER;
+
+    if (!workspaceInitialized && workspaceFolder) {
+      logger.info('🔧 Auto-initializing workspace from WORKSPACE_FOLDER', { workspaceFolder });
+      process.env.WORKSPACE_INITIALIZED = 'true';
+    } else if (!workspaceInitialized && !workspaceFolder) {
       logger.info('⏸️ Auto-indexing deferred until workspace is configured (first run)');
       logger.info(
         '💡 Run manage_embeddings { action: "set_workspace", projectPath: "<your project path>" } to enable indexing'
@@ -65,16 +73,56 @@ export class AutoIndexingStartup {
     }
 
     try {
-      // Check if user is authenticated
-      const hasApiKey = await this.checkAuthentication();
-      if (!hasApiKey) {
-        logger.info('⚠️ No API key configured - skipping automatic indexing');
-        logger.info('💡 Set AMBIANCE_API_KEY environment variable to enable automatic indexing');
+      // Skip automatic indexing during build processes and when running npm scripts
+      const buildLockFile = path.join(process.cwd(), '.build-lock');
+      const buildLockExists = fs.existsSync(buildLockFile);
+      const isExplicitSkip = process.env.AMBIANCE_SKIP_INDEXING === '1';
+      const isBuildProcess = buildLockExists || isExplicitSkip;
+
+      logger.debug('🔍 Build process check', {
+        buildLockFile,
+        buildLockExists,
+        isExplicitSkip,
+        cwd: process.cwd(),
+        argv: process.argv.slice(0, 3),
+      });
+
+      if (isBuildProcess) {
+        logger.debug('🔨 Build process or npm script detected - skipping automatic indexing', {
+          buildLockExists,
+          isExplicitSkip,
+          npmLifecycleEvent: process.env.npm_lifecycle_event,
+          cwd: process.cwd(),
+          mainModule: process.mainModule?.filename,
+          argv: process.argv.slice(0, 3),
+        });
         this.startupComplete = true;
         return;
       }
 
-      logger.info('✅ API key detected - proceeding with automatic indexing');
+      // Check if user has cloud API key OR local embeddings enabled
+      const hasApiKey = await this.checkAuthentication();
+      const useLocalEmbeddings =
+        process.env.USE_LOCAL_EMBEDDINGS === 'true' || process.env.USE_LOCAL_STORAGE === 'true';
+
+      if (!hasApiKey && !useLocalEmbeddings) {
+        logger.info(
+          '⚠️ No API key configured and local embeddings disabled - skipping automatic indexing'
+        );
+        logger.info(
+          '💡 Set AMBIANCE_API_KEY environment variable for cloud sync, or USE_LOCAL_EMBEDDINGS=true for local embeddings'
+        );
+        this.startupComplete = true;
+        return;
+      }
+
+      if (hasApiKey) {
+        logger.info('✅ Cloud API key detected - enabling automatic cloud indexing');
+      } else if (useLocalEmbeddings) {
+        logger.info(
+          '✅ Local embeddings enabled - enabling automatic file watching for embedding updates'
+        );
+      }
 
       // Check for proper workspace configuration
       const workspaceFolder = process.env.WORKSPACE_FOLDER;
@@ -102,7 +150,12 @@ export class AutoIndexingStartup {
 
       // Validate that workspace folder exists and is accessible
       const workingDir = baseDir || workspaceFolder;
-      if (!require('fs').existsSync(workingDir)) {
+      if (!workingDir) {
+        logger.warn('⚠️ No workspace folder configured - skipping automatic indexing');
+        this.startupComplete = true;
+        return;
+      }
+      if (!fs.existsSync(workingDir)) {
         logger.warn('⚠️ Configured workspace folder does not exist - skipping automatic indexing', {
           workspaceFolder: workingDir,
         });
@@ -110,27 +163,31 @@ export class AutoIndexingStartup {
         return;
       }
 
-      // Auto-detect and index current project using the correct working directory
-      const session = await this.indexer.autoDetectAndIndex(workingDir);
+      // Handle cloud indexing vs local file watching
+      if (hasApiKey) {
+        // Cloud indexing: full auto-detect and index
+        const session = await this.indexer.autoDetectAndIndex(workingDir);
 
-      if (session) {
-        logger.info(`🎯 Started indexing session ${session.id} for current project`);
-
-        // Monitor session progress
-        this.monitorIndexingProgress(session.id);
-
-        // Start file watching for continuous indexing
-        // Use proper workspace detection to avoid watching system directories
-        const projectIdentifier = ProjectIdentifier.getInstance();
-        const projectInfo = await projectIdentifier.identifyProject(workingDir);
-        const projectPath =
-          projectInfo?.path || projectIdentifier.findWorkspaceRootSync(workingDir || process.cwd());
-
-        await this.indexer.startWatching(projectPath);
-        logger.info(`👁️ Started file watching for ${projectPath}`);
-      } else {
-        logger.info('ℹ️ No project to index or project already up to date');
+        if (session) {
+          logger.info(`🎯 Started cloud indexing session ${session.id} for current project`);
+          // Monitor session progress
+          this.monitorIndexingProgress(session.id);
+        } else {
+          logger.info('ℹ️ No project to index or project already up to date');
+        }
       }
+
+      // Always start file watching for both cloud and local embeddings
+      // Use proper workspace detection to avoid watching system directories
+      const projectIdentifier = ProjectIdentifier.getInstance();
+      const projectInfo = await projectIdentifier.identifyProject(workingDir);
+      const projectPath =
+        projectInfo?.path || projectIdentifier.findWorkspaceRootSync(workingDir || process.cwd());
+
+      await this.indexer.startWatching(projectPath);
+      logger.info(
+        `👁️ Started file watching for ${projectPath} (${hasApiKey ? 'cloud + local' : 'local embeddings only'})`
+      );
 
       this.startupComplete = true;
       logger.info('✅ Auto-indexing startup completed successfully');

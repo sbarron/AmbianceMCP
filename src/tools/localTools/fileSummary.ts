@@ -471,7 +471,7 @@ export async function getComprehensiveASTAnalysis(filePath: string): Promise<{
 
     let allFunctions: any[] = [];
     let allClasses: any[] = [];
-    let allInterfaces: any[] = [];
+    const allInterfaces: any[] = [];
     let exportedSymbols: string[] = [];
 
     // Existing JS/TS/Python processing

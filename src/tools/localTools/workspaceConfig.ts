@@ -428,7 +428,7 @@ async function handleSetWorkspace(
     fileCount: validation.fileCount || 0,
   });
 
-  let embeddingGenerationResult = null;
+  const embeddingGenerationResult = null;
   let embeddingMessage = '';
 
   if (shouldGenerate.shouldGenerate) {

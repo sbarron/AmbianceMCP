@@ -285,7 +285,7 @@ export async function countFilesInDirectory(
         if (result.total >= maxCount) break;
 
         const fullPath = join(currentDir, entry.name);
-        const relativePath = fullPath.replace(dirPath, '').replace(/^[\/\\]/, '');
+        const relativePath = fullPath.replace(dirPath, '').replace(/^[\\/]/, '');
 
         // Skip hidden folders unless allowed
         if (!allowHiddenFolders && entry.name.startsWith('.')) {

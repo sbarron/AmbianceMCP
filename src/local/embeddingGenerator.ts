@@ -557,6 +557,10 @@ export class LocalEmbeddingGenerator {
 
     await this.storage.storeFileMetadata(fileMetadata);
 
+    // Clean up any existing embeddings for this file before generating new ones
+    // This prevents chunk accumulation when files are updated
+    await this.storage.deleteEmbeddingsByFile(fileId);
+
     // Chunk the content
     const chunks = await this.chunkContent(content, filePath, options);
 
@@ -1433,13 +1437,6 @@ export class LocalEmbeddingGenerator {
       return 'openai';
     }
 
-    // Use VoyageAI only if explicitly enabled and key is available
-    // VoyageAI support removed as service is no longer available
-    if (false) {
-      logger.info('✅ Using voyageai provider (explicitly enabled)');
-      return 'voyageai';
-    }
-
     // Default to local opensource models (transformers.js)
     logger.info('✅ Using local provider (default)');
     return 'local';
@@ -1641,21 +1638,54 @@ export class LocalEmbeddingGenerator {
     let files = await globby(searchPatterns, {
       cwd: projectPath,
       absolute: true,
-      ignore: ['node_modules/**', 'dist/**', 'build/**', '.git/**'],
+      onlyFiles: true,
     });
 
     // Additional safety filtering to ensure ignored directories are not processed
     const shouldIgnoreFile = (filePath: string): boolean => {
+      const relativePath = path.relative(projectPath, filePath);
+
+      // Direct check: always ignore dist folder and other common patterns
+      if (
+        relativePath.startsWith('dist') ||
+        relativePath.startsWith('dist/') ||
+        relativePath.startsWith('dist\\')
+      ) {
+        return true;
+      }
+      if (
+        relativePath.startsWith('node_modules') ||
+        relativePath.startsWith('node_modules/') ||
+        relativePath.startsWith('node_modules\\')
+      ) {
+        return true;
+      }
+      if (
+        relativePath.startsWith('.git') ||
+        relativePath.startsWith('.git/') ||
+        relativePath.startsWith('.git\\')
+      ) {
+        return true;
+      }
+      if (
+        relativePath.startsWith('build') ||
+        relativePath.startsWith('build/') ||
+        relativePath.startsWith('build\\')
+      ) {
+        return true;
+      }
+
       const normalizedPath = filePath.replace(/\\/g, '/').toLowerCase();
-      return (
+      const shouldIgnore =
         normalizedPath.includes('/node_modules/') ||
         normalizedPath.includes('/dist/') ||
         normalizedPath.includes('/build/') ||
         normalizedPath.includes('/.git/') ||
         normalizedPath.includes('.min.') ||
         normalizedPath.includes('.test.') ||
-        normalizedPath.includes('.spec.')
-      );
+        normalizedPath.includes('.spec.');
+
+      return shouldIgnore;
     };
 
     const beforeFilterCount = files.length;
@@ -1807,6 +1837,174 @@ export class LocalEmbeddingGenerator {
       });
       // Don't fail the entire process, just log the error
     }
+  }
+
+  /**
+   * Update embeddings for specific files (incremental updates)
+   * This is more efficient than regenerating all embeddings for large projects
+   */
+  async updateProjectEmbeddings(
+    projectId: string,
+    projectPath: string,
+    options: {
+      files?: string[]; // Specific files to update, if not provided, checks for changed files
+      force?: boolean;
+      batchSize?: number;
+      rateLimit?: number;
+      maxChunkSize?: number;
+      filePatterns?: string[];
+    } = {}
+  ): Promise<{
+    processedFiles: number;
+    embeddings: number;
+    totalChunks: number;
+    errors: string[];
+  }> {
+    // Check if we're in a build process and skip indexing
+    const buildLockFile = path.join(projectPath, '.build-lock');
+    const isBuildProcess =
+      fs.existsSync(buildLockFile) ||
+      process.env.AMBIANCE_SKIP_INDEXING === '1' ||
+      process.env.npm_lifecycle_event === 'build' ||
+      process.env.npm_lifecycle_event === 'prebuild';
+
+    if (isBuildProcess) {
+      logger.info('🔨 Build process detected - skipping embedding updates', {
+        buildLockFile,
+        buildLockExists: fs.existsSync(buildLockFile),
+        AMBIANCE_SKIP_INDEXING: process.env.AMBIANCE_SKIP_INDEXING,
+        npm_lifecycle_event: process.env.npm_lifecycle_event,
+      });
+      return {
+        processedFiles: 0,
+        embeddings: 0,
+        totalChunks: 0,
+        errors: ['Build process detected - skipping embedding updates'],
+      };
+    }
+    const {
+      files,
+      force = false,
+      batchSize = 10,
+      rateLimit = 1000,
+      maxChunkSize = 1500,
+      filePatterns = [
+        '**/*.{ts,tsx,js,jsx,py,go,rs,java,cpp,c,h,hpp,cs,rb,php,swift,kt,scala,clj,hs,ml,r,sql,sh,bash,zsh,md}',
+      ],
+    } = options;
+
+    logger.info('🔄 Starting incremental embedding update', {
+      projectId,
+      projectPath,
+      filesToUpdate: files?.length || 'auto-detect',
+      force,
+    });
+
+    const result = {
+      processedFiles: 0,
+      embeddings: 0,
+      totalChunks: 0,
+      errors: [] as string[],
+    };
+
+    try {
+      // If specific files provided, process only those
+      if (files && files.length > 0) {
+        for (const relativeFilePath of files) {
+          try {
+            // ABSOLUTE FILTER: Reject any file with ignored patterns
+            if (
+              relativeFilePath.includes('dist') ||
+              relativeFilePath.includes('node_modules') ||
+              relativeFilePath.includes('.git') ||
+              relativeFilePath.includes('\\dist\\') ||
+              relativeFilePath.includes('/dist/') ||
+              relativeFilePath.includes('\\node_modules\\') ||
+              relativeFilePath.includes('/node_modules/') ||
+              (relativeFilePath.includes('\\') &&
+                (relativeFilePath.includes('.git') || relativeFilePath.includes('/.git')))
+            ) {
+              logger.debug(`🚫 Filtering out ignored file: ${relativeFilePath}`);
+              continue;
+            }
+
+            const fullPath = path.resolve(projectPath, relativeFilePath);
+            if (!fs.existsSync(fullPath)) {
+              logger.warn(`⚠️ File not found, skipping: ${relativeFilePath}`);
+              continue;
+            }
+
+            const fileResult = await this.processSingleFile(projectId, fullPath, projectPath, {
+              batchSize,
+              rateLimit,
+              maxChunkSize,
+            });
+
+            result.processedFiles++;
+            result.embeddings += fileResult.embeddings;
+            result.totalChunks += fileResult.chunks;
+          } catch (error) {
+            const errorMsg = `Failed to update embeddings for ${relativeFilePath}: ${error instanceof Error ? error.message : String(error)}`;
+            logger.error(`❌ ${errorMsg}`);
+            result.errors.push(errorMsg);
+          }
+        }
+      } else {
+        // Auto-detect changed files (would need file modification time comparison)
+        // For now, fall back to processing recent files or all files
+        logger.info('📋 No specific files provided, checking for recently modified files');
+
+        // This is a placeholder - in a real implementation, you'd compare file modification times
+        // against last embedding update times stored in the database
+        logger.warn(
+          '⚠️ Auto-detection of changed files not yet implemented, consider providing specific files'
+        );
+        result.errors.push('Auto-detection of changed files not implemented');
+      }
+
+      logger.info('✅ Incremental embedding update completed', {
+        projectId,
+        processedFiles: result.processedFiles,
+        embeddings: result.embeddings,
+        totalChunks: result.totalChunks,
+        errors: result.errors.length,
+      });
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.error('❌ Incremental embedding update failed', {
+        projectId,
+        error: errorMsg,
+      });
+      result.errors.push(`Update failed: ${errorMsg}`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Process a single file for embedding updates
+   */
+  private async processSingleFile(
+    projectId: string,
+    filePath: string,
+    projectPath: string,
+    options: {
+      batchSize: number;
+      rateLimit: number;
+      maxChunkSize: number;
+    }
+  ): Promise<{ embeddings: number; chunks: number }> {
+    // Use the existing generateFileEmbeddings method which handles chunking and embedding generation
+    const progress = await this.generateFileEmbeddings(projectId, filePath, projectPath, {
+      batchSize: options.batchSize,
+      rateLimit: options.rateLimit,
+      maxChunkSize: options.maxChunkSize,
+    });
+
+    return {
+      embeddings: progress.embeddings,
+      chunks: progress.totalChunks,
+    };
   }
 
   /**

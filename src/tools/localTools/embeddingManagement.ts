@@ -19,16 +19,34 @@ import {
   getProjectEmbeddingDetails,
 } from './projectManagement';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { isQuantized, dequantizeInt8ToFloat32, QuantizedEmbedding } from '../../local/quantization';
+
+/**
+ * Format bytes into human readable format
+ */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
 
 export type ManageEmbeddingsAction =
   | 'status'
   | 'health_check'
   | 'create'
+  | 'update'
   | 'validate'
   | 'list_projects'
   | 'delete_project'
   | 'project_details'
+  | 'recent_files'
+  | 'check_stale'
+  | 'find_duplicates'
+  | 'cleanup_duplicates'
   | 'get_workspace'
   | 'set_workspace'
   | 'validate_workspace';
@@ -37,10 +55,15 @@ const SUPPORTED_ACTIONS: readonly ManageEmbeddingsAction[] = [
   'status',
   'health_check',
   'create',
+  'update',
   'validate',
   'list_projects',
   'delete_project',
   'project_details',
+  'recent_files',
+  'check_stale',
+  'find_duplicates',
+  'cleanup_duplicates',
   'get_workspace',
   'set_workspace',
   'validate_workspace',
@@ -63,6 +86,12 @@ export interface ManageEmbeddingsRequest {
   excludePatterns?: string[];
   allowHiddenFolders?: boolean;
   autoGenerate?: boolean;
+  // Incremental update options
+  files?: string[];
+  // Recent files options
+  limit?: number;
+  // Check stale options
+  autoUpdate?: boolean;
 }
 
 /**
@@ -121,7 +150,9 @@ export const manageEmbeddingsTool = {
 - status: Inspect current/stored model configuration, stats, and recommendations (projectPath required).
 - health_check: Run diagnostics with optional auto-fix for model mismatches (projectPath required).
 - create: Generate or regenerate embeddings using the active model settings (projectPath required).
+- update: Update embeddings for specific files or changed files (projectPath required, files optional).
 - validate: Inspect stored embeddings for compatibility issues and integrity problems (projectPath required).
+- check_stale: Identify files that need re-indexing by comparing disk vs database timestamps (projectPath required, autoUpdate optional).
 
 **Project Management Actions**
 - list_projects: Enumerate every project with stored embeddings.
@@ -226,6 +257,23 @@ export const manageEmbeddingsTool = {
         description:
           'Automatically generate embeddings after setting workspace (for set_workspace)',
       },
+      files: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Specific files to update embeddings for (for update action)',
+      },
+      limit: {
+        type: 'number',
+        description: 'Maximum number of files to return (for recent_files action)',
+        default: 20,
+        minimum: 1,
+        maximum: 100,
+      },
+      autoUpdate: {
+        type: 'boolean',
+        description: 'Automatically update stale files (for check_stale action)',
+        default: false,
+      },
     },
     required: [],
   },
@@ -285,6 +333,15 @@ export async function handleManageEmbeddings(args: ManageEmbeddingsRequest): Pro
           batchSize: args.batchSize,
         });
       }
+      case 'update': {
+        const projectPath = requireProjectPath(args.projectPath);
+        return await updateProjectEmbeddings({
+          projectPath,
+          files: args.files,
+          force: args.force,
+          batchSize: args.batchSize,
+        });
+      }
       case 'validate': {
         const projectPath = requireProjectPath(args.projectPath);
         return await validateProjectEmbeddings({
@@ -314,6 +371,73 @@ export async function handleManageEmbeddings(args: ManageEmbeddingsRequest): Pro
         return await getProjectEmbeddingDetails({
           projectIdentifier: args.projectIdentifier,
         });
+      }
+      case 'recent_files': {
+        const projectPath = requireProjectPath(args.projectPath);
+        return await getRecentlyUpdatedFiles({
+          projectPath,
+          limit: args.limit || 20,
+        });
+      }
+      case 'check_stale': {
+        const projectPath = requireProjectPath(args.projectPath);
+        return await checkStaleFiles({
+          projectPath,
+          autoUpdate: args.autoUpdate || false,
+          batchSize: args.batchSize,
+        });
+      }
+      case 'find_duplicates': {
+        const projectPath = requireProjectPath(args.projectPath);
+        const { projectId } = await resolveProject(projectPath);
+        const { LocalEmbeddingStorage } = await import('../../local/embeddingStorage');
+        const storage = new LocalEmbeddingStorage();
+        const staleFiles = await storage.findStaleFileEmbeddings(projectId);
+
+        return {
+          success: true,
+          projectId,
+          projectPath,
+          staleFilesFound: staleFiles.length,
+          totalAffectedChunks: staleFiles.reduce(
+            (sum, file) =>
+              sum + file.generations.reduce((genSum, gen) => genSum + gen.chunkCount, 0),
+            0
+          ),
+          staleFiles: staleFiles.map(file => ({
+            filePath: file.filePath,
+            generations: file.generationCount,
+            totalChunks: file.generations.reduce((sum, gen) => sum + gen.chunkCount, 0),
+            dateRange:
+              file.generations.length > 1
+                ? {
+                    oldest: file.generations[file.generations.length - 1].createdAt.toISOString(),
+                    newest: file.generations[0].createdAt.toISOString(),
+                  }
+                : null,
+            generationDetails: file.generations.map(gen => ({
+              createdAt: gen.createdAt.toISOString(),
+              chunkCount: gen.chunkCount,
+              chunks: gen.embeddings.map(e => `${e.chunkIndex}:${e.hash.substring(0, 8)}...`),
+            })),
+          })),
+          message: `Found ${staleFiles.length} files with stale embeddings, affecting ${staleFiles.reduce((sum, file) => sum + file.generations.reduce((genSum, gen) => genSum + gen.chunkCount, 0), 0)} total chunks`,
+        };
+      }
+      case 'cleanup_duplicates': {
+        const projectPath = requireProjectPath(args.projectPath);
+        const { projectId } = await resolveProject(projectPath);
+        const { LocalEmbeddingStorage } = await import('../../local/embeddingStorage');
+        const storage = new LocalEmbeddingStorage();
+        const result = await storage.cleanupStaleFileEmbeddings(projectId);
+
+        return {
+          success: true,
+          projectId,
+          projectPath,
+          ...result,
+          message: `Cleaned up ${result.staleFilesFound} stale files, deleted ${result.chunksDeleted} chunks, saved ~${formatBytes(result.spaceSaved)}`,
+        };
       }
       default:
         throw new Error(`Unhandled manage_embeddings action: ${action}`);
@@ -718,6 +842,236 @@ export async function createProjectEmbeddings(args: {
   }
 }
 
+export async function updateProjectEmbeddings(args: {
+  projectPath: string;
+  files?: string[];
+  force?: boolean;
+  batchSize?: number;
+}): Promise<any> {
+  const { projectPath, files, force = false, batchSize = 10 } = args;
+
+  const { projectId, projectPath: resolvedProjectPath } = await resolveProject(projectPath);
+
+  logger.info('Starting incremental embedding update', {
+    projectPath: resolvedProjectPath,
+    projectId,
+    filesToUpdate: files?.length || 'auto-detect',
+    force,
+    batchSize,
+  });
+
+  try {
+    const { LocalEmbeddingGenerator } = await import('../../local/embeddingGenerator');
+    const embeddingGenerator = new LocalEmbeddingGenerator();
+
+    const result = await embeddingGenerator.updateProjectEmbeddings(
+      projectId,
+      resolvedProjectPath,
+      {
+        files,
+        force,
+        batchSize,
+        rateLimit: 500,
+      }
+    );
+
+    logger.info('Incremental embedding update completed', {
+      projectId,
+      processedFiles: result.processedFiles,
+      embeddings: result.embeddings,
+      totalChunks: result.totalChunks,
+      errors: result.errors.length,
+    });
+
+    return {
+      success: true,
+      updated: true,
+      projectId,
+      projectPath: resolvedProjectPath,
+      result,
+      message: `Updated ${result.embeddings} embeddings across ${result.processedFiles} files`,
+    };
+  } catch (error) {
+    logger.error('Incremental embedding update failed', {
+      error: error instanceof Error ? error.message : String(error),
+      projectPath: resolvedProjectPath,
+    });
+    throw new Error(`Incremental embedding update failed: ${(error as Error).message}`);
+  }
+}
+
+export async function getRecentlyUpdatedFiles(args: {
+  projectPath: string;
+  limit?: number;
+}): Promise<any> {
+  const { projectPath, limit = 20 } = args;
+
+  const { projectId, projectPath: resolvedProjectPath } = await resolveProject(projectPath);
+
+  logger.info('Fetching recently updated files', {
+    projectPath: resolvedProjectPath,
+    projectId,
+    limit,
+  });
+
+  try {
+    const { LocalEmbeddingStorage } = await import('../../local/embeddingStorage');
+    const storage = new LocalEmbeddingStorage();
+
+    const recentFiles = await storage.getRecentlyUpdatedFiles(projectId, limit);
+
+    logger.info('Retrieved recently updated files', {
+      projectId,
+      count: recentFiles.length,
+      limit,
+    });
+
+    return {
+      success: true,
+      projectId,
+      projectPath: resolvedProjectPath,
+      recentFiles,
+      totalFiles: recentFiles.length,
+      message: `Found ${recentFiles.length} recently updated files`,
+    };
+  } catch (error) {
+    logger.error('Failed to fetch recently updated files', {
+      error: error instanceof Error ? error.message : String(error),
+      projectPath: resolvedProjectPath,
+    });
+    throw new Error(`Failed to fetch recently updated files: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Check for stale files that need re-indexing (disk timestamp > database timestamp)
+ */
+export async function checkStaleFiles(args: {
+  projectPath: string;
+  autoUpdate?: boolean;
+  batchSize?: number;
+}): Promise<any> {
+  const { projectPath, autoUpdate = false, batchSize = 10 } = args;
+
+  const { projectId, projectPath: resolvedProjectPath } = await resolveProject(projectPath);
+
+  logger.info('Checking for stale files', {
+    projectPath: resolvedProjectPath,
+    projectId,
+    autoUpdate,
+  });
+
+  try {
+    const { LocalEmbeddingStorage } = await import('../../local/embeddingStorage');
+    const storage = new LocalEmbeddingStorage();
+
+    // Get all files from database with their last modified timestamps
+    const dbFiles = await storage.listProjectFiles(projectId);
+
+    const staleFiles: Array<{
+      filePath: string;
+      fileId: string;
+      dbTimestamp: Date;
+      diskTimestamp: Date;
+      timeDiff: number;
+    }> = [];
+
+    const missingFiles: Array<{
+      filePath: string;
+      fileId: string;
+      dbTimestamp: Date;
+    }> = [];
+
+    // Check each file's disk timestamp vs database timestamp
+    for (const dbFile of dbFiles) {
+      const fullPath = path.join(resolvedProjectPath, dbFile.path);
+
+      // Check if file exists on disk
+      if (!fs.existsSync(fullPath)) {
+        missingFiles.push({
+          filePath: dbFile.path,
+          fileId: dbFile.id,
+          dbTimestamp: dbFile.lastModified,
+        });
+        continue;
+      }
+
+      // Get file stats from disk
+      const diskStats = fs.statSync(fullPath);
+      const diskTimestamp = diskStats.mtime;
+      const dbTimestamp = dbFile.lastModified;
+
+      // If disk file is newer than database, it's stale
+      if (diskTimestamp > dbTimestamp) {
+        const timeDiff = diskTimestamp.getTime() - dbTimestamp.getTime();
+        staleFiles.push({
+          filePath: dbFile.path,
+          fileId: dbFile.id,
+          dbTimestamp,
+          diskTimestamp,
+          timeDiff,
+        });
+      }
+    }
+
+    // Sort stale files by time difference (most stale first)
+    staleFiles.sort((a, b) => b.timeDiff - a.timeDiff);
+
+    logger.info('Stale file check complete', {
+      projectId,
+      totalFiles: dbFiles.length,
+      staleFiles: staleFiles.length,
+      missingFiles: missingFiles.length,
+    });
+
+    // If autoUpdate is true, update the stale files
+    let updateResult = null;
+    if (autoUpdate && staleFiles.length > 0) {
+      logger.info('Auto-updating stale files', {
+        count: staleFiles.length,
+        batchSize,
+      });
+
+      updateResult = await updateProjectEmbeddings({
+        projectPath: resolvedProjectPath,
+        files: staleFiles.map(f => f.filePath),
+        force: true,
+        batchSize,
+      });
+    }
+
+    return {
+      success: true,
+      projectId,
+      projectPath: resolvedProjectPath,
+      totalFiles: dbFiles.length,
+      staleFiles: staleFiles.map(f => ({
+        filePath: f.filePath,
+        dbTimestamp: f.dbTimestamp.toISOString(),
+        diskTimestamp: f.diskTimestamp.toISOString(),
+        timeDiffSeconds: Math.round(f.timeDiff / 1000),
+      })),
+      missingFiles: missingFiles.map(f => ({
+        filePath: f.filePath,
+        dbTimestamp: f.dbTimestamp.toISOString(),
+      })),
+      staleCount: staleFiles.length,
+      missingCount: missingFiles.length,
+      autoUpdate,
+      updateResult,
+      message: autoUpdate
+        ? `Found and updated ${staleFiles.length} stale files`
+        : `Found ${staleFiles.length} stale files that need updating`,
+    };
+  } catch (error) {
+    logger.error('Failed to check stale files', {
+      error: error instanceof Error ? error.message : String(error),
+      projectPath: resolvedProjectPath,
+    });
+    throw new Error(`Failed to check stale files: ${(error as Error).message}`);
+  }
+}
+
 export async function validateProjectEmbeddings(args: {
   projectPath: string;
   includeStats?: boolean;
@@ -864,25 +1218,26 @@ async function getCurrentModelConfiguration(): Promise<{
   dimensions: number;
   format: 'int8' | 'float32';
 }> {
-  // Default to local opensource models (transformers.js)
+  let localConfig = {
+    provider: 'local',
+    model: 'transformers.js',
+    dimensions: 384,
+    format: 'float32' as const,
+  };
+
   try {
     const { getDefaultLocalProvider } = await import('../../local/localEmbeddingProvider');
     const localProvider = getDefaultLocalProvider();
     const localModelInfo = localProvider.getModelInfo();
 
-    return {
+    localConfig = {
       provider: 'local',
       model: localModelInfo.name,
       dimensions: localModelInfo.dimensions,
       format: 'float32',
     };
   } catch {
-    return {
-      provider: 'local',
-      model: 'transformers.js',
-      dimensions: 384,
-      format: 'float32',
-    };
+    // Fallback stays as default local configuration
   }
 
   // Use OpenAI only if explicitly enabled and key is available
@@ -909,12 +1264,7 @@ async function getCurrentModelConfiguration(): Promise<{
   // Legacy VoyageAI support removed as the service is no longer available
 
   // Fallback to local if no other providers are explicitly enabled
-  return {
-    provider: 'local',
-    model: 'transformers.js',
-    dimensions: 384,
-    format: 'float32',
-  };
+  return localConfig;
 }
 
 export { getCurrentModelConfiguration };
@@ -1109,6 +1459,21 @@ async function handleSetWorkspace(
     embeddingMessage = 'Embeddings will be generated automatically when AI tools are first used';
   }
 
+  // Start automatic indexing (file watching + periodic stale checks) after workspace is set
+  try {
+    const { initializeAutoIndexing } = await import('../../startup/autoIndexingStartup');
+    logger.info('🔄 Starting automatic indexing after workspace configuration');
+    initializeAutoIndexing().catch(error => {
+      logger.warn('⚠️ Background indexing failed to start after set_workspace', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  } catch (error) {
+    logger.warn('⚠️ Could not start automatic indexing', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   return {
     success: true,
     workspace: validation.path,
@@ -1121,7 +1486,8 @@ async function handleSetWorkspace(
       (validation.warnings ? ` [Warnings: ${validation.warnings.length}]` : '') +
       (autoGenerate
         ? ` [Embedding generation: ${embeddingGenerationResult?.success ? 'completed' : 'failed'}]`
-        : ''),
+        : '') +
+      ' [Auto-indexing started]',
     embeddingMessage,
   };
 }

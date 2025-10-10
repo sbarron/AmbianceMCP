@@ -514,7 +514,12 @@ export async function handleAstGrep(args: any): Promise<AstGrepResult> {
     if (tempRule) {
       try {
         await fs.unlink(tempRule);
-      } catch {}
+      } catch (error) {
+        logger.debug('Failed to delete temporary ast-grep rule file', {
+          ruleFile: tempRule,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     return {
@@ -1246,7 +1251,7 @@ function tryLoadAjv(): any | null {
   try {
     // Lazy require; Ajv may not be installed in all environments
     // If absent, we fall back to minimal checks
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const Ajv = require('ajv');
     // coerceTypes not needed; draft-2020 supported by Ajv v8+
     return new Ajv({ allErrors: true, strict: false });

@@ -1,30 +1,40 @@
 # Ambiance MCP Server
 
-> **Intelligent code context and analysis for modern IDEs**
+> **Unlock smarter coding: 60-80% fewer tokens, deeper insights, and seamless IDE integration**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.1+-blue)](https://www.typescriptlang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.1-blue)](https://github.com/sbarron/AmbianceMCP)
+[![Version](https://img.shields.io/badge/version-0.2.3-blue)](https://github.com/sbarron/AmbianceMCP)
 
-**MCP server that provides intelligent code context through semantic analysis, AST parsing, and token-efficient compression. Get 60-80% better token efficiency while maintaining full semantic understanding of your codebase.**
+Tired of bloated code contexts wasting your AI tokens and slowing down your workflow? Ambiance MCP delivers intelligent, compressed code analysis that slashes token usage by 60-80% while preserving full semantic depth. Get precise context for debugging, understanding, and navigation—offline-ready, multi-language support, and extensible with AI or cloud features. Boost productivity in your IDE without the overhead.
+
+Use as an MCP tool in your IDE or directly from the command line for flexible integration with your development workflow.
+
+## Why Ambiance?
+- **Save Tokens & Costs:** Semantic compaction means fewer tokens for AI prompts, reducing expenses and speeding up responses.
+- **Deeper Insights Faster:** AST parsing and embeddings uncover hidden patterns, helping you debug issues, trace logic, and grasp project architecture in seconds.
+- **Offline Power:** Core features work without internet, keeping you productive anywhere.
+- **Seamless Integration:** Plug into your IDE for real-time context, with optional AI enhancements for smarter analysis.
+- **Scalable for Any Project:** Handles TypeScript, JavaScript, Python, Go, Rust—whether local or GitHub-based.
 
 ## 🚀 Quick Start
 
-### 1. Install
+### 1. Install Globally
 ```bash
 npm install -g @jackjackstudios/ambiance-mcp
 ```
 
-### 2. Create Embeddings (Recommended)
-Navigate to your project directory and create embeddings for enhanced context analysis:
+### 2. Set Up Embeddings (For Best Results)
+In your project directory:
 ```bash
 cd /path/to/your/project
 ambiance-mcp embeddings create
 ```
-This step generates local embeddings that enable semantic search and improve context analysis. The process may take 2-10 minutes depending on project size.
+This enables semantic search—takes 2-10 minutes once, then auto-updates on changes.
 
 ### 3. Configure Your IDE
+Add this to your IDE's MCP server settings. Set `WORKSPACE_FOLDER` to your project path.
 
 **Windows:**
 ```json
@@ -32,12 +42,7 @@ This step generates local embeddings that enable semantic search and improve con
   "mcpServers": {
     "ambiance": {
       "command": "cmd",
-      "args": [
-        "/c",
-        "npx",
-        "-y",
-        "@jackjackstudios/ambiance-mcp@latest"
-      ],
+      "args": ["/c", "npx", "-y", "@jackjackstudios/ambiance-mcp@latest"],
       "env": {
         "WORKSPACE_FOLDER": "C:\\DevelopmentDirectory\\YourProject",
         "USE_LOCAL_EMBEDDINGS": "true"
@@ -53,10 +58,7 @@ This step generates local embeddings that enable semantic search and improve con
   "mcpServers": {
     "ambiance": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@jackjackstudios/ambiance-mcp@latest"
-      ],
+      "args": ["-y", "@jackjackstudios/ambiance-mcp@latest"],
       "env": {
         "WORKSPACE_FOLDER": "/path/to/your/project",
         "USE_LOCAL_EMBEDDINGS": "true"
@@ -66,172 +68,102 @@ This step generates local embeddings that enable semantic search and improve con
 }
 ```
 
-### 4. Start Using
+### 4. Go!
+Ambiance auto-activates based on your setup. Add `OPENAI_API_KEY` for AI boosts or `AMBIANCE_API_KEY` for GitHub integration.
 
-**That's it!** Ambiance automatically enables features based on your environment variables:
-- 🚀 **Local Embeddings** (`USE_LOCAL_EMBEDDINGS=true`): Cost-effective, offline-ready
-- 🤖 **AI Enhancement** (`OPENAI_API_KEY`): Intelligent context analysis
-- ☁️ **Cloud Features** (`AMBIANCE_API_KEY`): GitHub repository integration
+## ✨ Core Features & Benefits
 
-## ✨ Key Features
+- **Semantic Code Compaction:** Shrink contexts by 60-80% without losing meaning—ideal for efficient AI interactions and faster coding.
+- **Project Navigation & Hints:** Instantly map your codebase structure, spotting key files and patterns to accelerate onboarding and refactoring.
+- **File & Debug Analysis:** Extract symbols, explain code, and pinpoint errors using AST—saving hours on troubleshooting.
+- **Embeddings for Similarity Search:** Offline semantic queries find relevant code chunks quickly, enhancing accuracy in large projects.
+- **Multi-Language Support:** Works across TypeScript, JavaScript, Python, Go, Rust for versatile development.
 
-- 🧠 **60-80% token reduction** through semantic compaction
-- 🔍 **Multi-language support** (TypeScript, JavaScript, Python, Go, Rust)
-- 🚀 **Works completely offline** - no internet required for core functionality
-- 🎯 **Intelligent context analysis** with AI enhancement options
-- 📊 **Project structure understanding** and navigation hints
+## 🔧 Basic Configuration
 
-## 🔧 Configuration
+Set these environment variables in your IDE config or terminal:
 
-### Environment Variables
+| Variable | Purpose | Required? | Default |
+|----------|---------|-----------|---------|
+| `WORKSPACE_FOLDER` | Your project path | Yes | Auto-detects if possible |
+| `USE_LOCAL_EMBEDDINGS` | Enable offline semantic search | No | `false` |
+| `OPENAI_API_KEY` | Unlock AI-powered insights | No | - |
+| `AMBIANCE_API_KEY` | Access GitHub repos | No | - |
 
-| Variable | Purpose | Required | Default |
-|----------|---------|----------|---------|
-| `WORKSPACE_FOLDER` | Project workspace path | ✅ | Auto-detected |
-| `OPENAI_API_KEY` | AI-enhanced tools | ❌ | - |
-| `AMBIANCE_API_KEY` | Cloud features | ❌ | - |
-| `USE_LOCAL_EMBEDDINGS` | Local embedding storage | ❌ | `false` |
+For AI: Add `OPENAI_BASE_MODEL=gpt-4` (or your preferred model).  
+For embeddings: Set `LOCAL_EMBEDDING_MODEL=all-MiniLM-L6-v2` for customization.
 
-### Enhanced Features (Optional)
+## Advanced Usage
 
-**AI Enhancement:**
-```bash
-OPENAI_API_KEY=your-openai-key
-OPENAI_BASE_MODEL=gpt-4
-```
+### How Embeddings Supercharge Your Workflow
+Embeddings generate in the background on first use (with `USE_LOCAL_EMBEDDINGS=true`), using AST fallback for immediate results. A file watcher auto-updates them every 3 minutes on changes—efficient and incremental.
 
-**Cloud Integration:**
-```bash
-AMBIANCE_API_KEY=your-cloud-key
-```
+Manual control via CLI:
+- `ambiance-mcp embeddings status` – Check progress and stats.
+- `ambiance-mcp embeddings create --force` – Regenerate all.
 
-**Local Embeddings:**
-```bash
-USE_LOCAL_EMBEDDINGS=true
-LOCAL_EMBEDDING_MODEL=all-MiniLM-L6-v2
-LOG_LEVEL=warn  # Reduce verbose output (optional)
-```
+### Available Tools
+Use these via your IDE or CLI for targeted analysis.
 
-### How Embeddings Work
+**Core (Offline):**
+- `local_context`: Compact code for queries like "authentication system".
+- `local_project_hints`: Get architecture overviews.
+- `local_file_summary`: Analyze files with symbols.
+- `local_debug_context`: Debug from error logs.
+- `manage_embeddings`: Control embeddings.
 
-**First-Time Usage:**
-- Embeddings are generated **automatically in the background** when you first use embedding-enhanced tools like `local_context` (when `USE_LOCAL_EMBEDDINGS=true`)
-- Tools return results immediately using AST analysis while embeddings generate in the background
-- Subsequent queries benefit from the generated embeddings for enhanced context similarity search
+**AI-Enhanced (Needs `OPENAI_API_KEY`):**
+- `ai_get_context`: Smarter context with AI.
+- `ai_project_hints`: Deeper insights.
+- `ai_code_explanation`: Auto-document code.
 
-**Ongoing Updates:**
-- File watcher monitors your project for changes (3-minute debounce)
-- Only modified files have their embeddings updated
-- Incremental updates keep embeddings current without full re-indexing
+**Cloud (Needs `AMBIANCE_API_KEY`):**
+- `ambiance_search_github_repos`: Find repos.
+- `ambiance_list_github_repos`: List yours.
+- `ambiance_get_context`: Pull repo context.
 
-**Manual Control:**
-Use `manage_embeddings` tool for fine-grained control:
-```typescript
-// Check embedding status with progress information
-{ "action": "status", "projectPath": "." }
+### Command Line Interface
+Run tools directly for testing or scripts—no IDE needed.
 
-// Monitor progress during active generation
-ambiance-mcp embeddings status
+**Key Commands:**
+- `ambiance-mcp context --query "How does auth work?" --task-type understand`
+- `ambiance-mcp hints --format json --use-ai`
+- `ambiance-mcp summary src/index.ts --include-symbols`
+- `ambiance-mcp debug "TypeError: undefined"`
+- `ambiance-mcp grep "function $NAME($ARGS)" --language typescript`
 
-// Set workspace and auto-generate embeddings
-{ "action": "set_workspace", "projectPath": ".", "autoGenerate": true }
+Global options: `--project-path`, `--format json`, `--output file.json`, `--verbose`.
 
-// Regenerate all embeddings (after model changes)
-{ "action": "create", "projectPath": ".", "force": true }
-```
+For full options, run `ambiance-mcp --help`.
 
-**Progress Monitoring:**
-- Use `ambiance-mcp embeddings status` to check if generation is in progress
-- Shows real-time progress: files processed, estimated time remaining
-- Displays elapsed time and completion percentage
+## 📖 More Docs
+- Source & contributions: https://github.com/sbarron/AmbianceMCP
+- Detailed CLI: `ambiance-mcp --help --expanded`
 
-## 🛠️ Available Tools
+**Change Log: Version 0.2.3"
+feat: Major enhancements to embedding management, AI tools, and frontend analysis
 
-### Core Tools (Always Available)
-- `local_context` - Semantic code compaction (60-80% reduction)
-- `local_project_hints` - Project navigation & architecture detection
-- `local_file_summary` - AST-based file analysis
-- `manage_embeddings` - Workspace & embedding management (replaces `workspace_config`)
-- `local_debug_context` - Error analysis & debugging
+- **Embedding Management & Automation**: 
+  - Added CLI controls for manual start/stop of automated embeddings updates
+  - Enhanced automatic indexing system with improved background processing
+  - Refactored embedding storage to resolve SQLite memory leak issues
 
-### AI-Enhanced Tools (OpenAI API Required)
-- `ai_get_context` - Intelligent context analysis
-- `ai_project_hints` - Enhanced project insights
-- `ai_code_explanation` - Detailed code documentation
+- **AI Tools Enhancement**:
+  - Improved AI-powered project insights with better pattern detection
+  - Enhanced semantic compaction for more efficient code analysis
+  - Updated analysis, explanation, and insights prompt templates
+  - Strengthened local context processing with enhanced semantic understanding
 
-### Cloud Tools (Ambiance API Required)
-- `ambiance_search_github_repos` - Search GitHub repositories
-- `ambiance_list_github_repos` - List available repositories
-- `ambiance_get_context` - GitHub repository context
+- **Frontend Analysis Improvements**:
+  - Enhanced frontend_insights with better styling file filtering
+  - Added composition analysis for file types in frontend components
+  - Improved environment detection and component analysis capabilities
 
-## 🖥️ Command Line Interface
+- **Infrastructure Updates**:
+  - Streamlined CLI documentation with simplified installation instructions
+  - Enhanced tool helper utilities and database evidence processing
+  - Improved project hints functionality for better codebase navigation
 
-Ambiance MCP now includes a comprehensive CLI for direct tool execution, perfect for development, testing, and standalone usage without requiring an MCP client.
-
-### CLI Tools (No API Keys Required)
-
-All local tools are available via CLI with no external dependencies:
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `context` | Semantic code compaction and context generation | `ambiance-mcp context --query "authentication system"` |
-| `hints` | Project structure analysis and navigation hints | `ambiance-mcp hints --format json` |
-| `summary` | Individual file analysis and symbol extraction | `ambiance-mcp summary src/index.ts` |
-| `frontend` | Frontend code pattern analysis | `ambiance-mcp frontend --include-content true` |
-| `debug` | Debug context analysis from error logs | `ambiance-mcp debug "Error: Cannot read property"` |
-| `grep` | AST-based structural code search | `ambiance-mcp grep "function $NAME($ARGS)"` |
-| `embeddings` | Embedding management and workspace configuration | `ambiance-mcp embeddings status`, `ambiance-mcp embeddings create` |
-
-### Global Options
-
-| Option | Description | Example |
-|--------|-------------|---------|
-| `--project-path <path>` | Set project directory | `--project-path /my/project` |
-| `--format <format>` | Output format (json, structured, compact) | `--format json` |
-| `--output <file>` | Write output to file | `--output results.json` |
-| `--verbose, -v` | Enable verbose output | `--verbose` |
-
-### CLI Examples
-
-```bash
-# Project analysis with JSON output
-ambiance-mcp hints --format json --project-path /path/to/project
-
-# File analysis with symbols
-ambiance-mcp summary src/index.ts --include-symbols true --format compact
-
-# Structural code search
-ambiance-mcp grep "function $NAME($ARGS)" --language typescript
-
-# Context generation for specific query
-ambiance-mcp context --query "How does database connection work?" --max-tokens 2000
-
-# Debug error analysis
-ambiance-mcp debug "TypeError: Cannot read property 'map' of undefined" --max-matches 10
-
-# Embedding management
-ambiance-mcp embeddings status --project-path /my/workspace
-ambiance-mcp embeddings create --project-path /my/workspace
-# Note: create command shows a detailed confirmation prompt before proceeding
-
-# Save output to file
-ambiance-mcp hints --format json --output project-analysis.json
-
-# Verbose output for debugging
-ambiance-mcp summary src/index.ts --verbose
-```
-
-
-## 📖 Documentation
-
-For detailed help and configuration options, run:
-```bash
-ambiance-mcp --help
-ambiance-mcp --help --expanded
-```
-
-For source code and contributions, visit: https://github.com/sbarron/AmbianceMCP
 
 ## 📄 License
-
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT – See [LICENSE](LICENSE).

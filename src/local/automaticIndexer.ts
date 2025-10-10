@@ -12,7 +12,7 @@
  *   - ProjectIdentifier: Project detection and identification
  *   - apiClient: Cloud service synchronization
  *   - globby: File pattern matching and discovery
- * @context: Provides automatic project indexing with intelligent file detection, cloud synchronization, and file system watching. Uses 3-minute debouncing to avoid excessive re-indexing during active development sessions.
+ * @context: Provides automatic project indexing with intelligent file detection, cloud synchronization, and file system watching. Uses 5-minute debouncing to avoid excessive re-indexing during active development sessions. Runs periodic stale file checks every 5 minutes to catch files modified while server was offline.
  */
 
 import * as fs from 'fs';
@@ -38,7 +38,7 @@ export interface IndexingOptions {
   force?: boolean; // Force re-index even if files haven't changed
   skipCloud?: boolean; // Only index locally, don't sync to cloud
   pattern?: string; // Only index files matching this pattern
-  debounceMs?: number; // File change debounce delay in milliseconds (default: 180000 = 3 minutes)
+  debounceMs?: number; // File change debounce delay in milliseconds (default: 300000 = 5 minutes)
 }
 
 export interface IndexingSession {
@@ -68,6 +68,9 @@ export class AutomaticIndexer {
   private projectIdentifier: ProjectIdentifier;
   private activeSessions: Map<string, IndexingSession>;
   private watchedProjects: Map<string, fs.FSWatcher>;
+  private staleCheckIntervals: Map<string, NodeJS.Timeout>; // Periodic stale file checks per project
+  private fileHashes: Map<string, string>; // Track file content hashes to detect actual changes
+  private processingQueue: Map<string, Promise<void>>; // Prevent concurrent processing per project
 
   private constructor() {
     this.projectManager = new LocalProjectManager();
@@ -75,6 +78,9 @@ export class AutomaticIndexer {
     this.projectIdentifier = ProjectIdentifier.getInstance();
     this.activeSessions = new Map();
     this.watchedProjects = new Map();
+    this.staleCheckIntervals = new Map();
+    this.fileHashes = new Map();
+    this.processingQueue = new Map();
   }
 
   static getInstance(): AutomaticIndexer {
@@ -299,51 +305,243 @@ export class AutomaticIndexer {
 
   /**
    * Start watching a project for file changes
-   * Uses configurable debouncing (default 3 minutes) to avoid excessive re-indexing
+   * Uses configurable debouncing (default 5 minutes) to avoid excessive re-indexing
    * during active development when files are already in agent context
+   * Also runs periodic stale file checks every 5 minutes to catch files modified while server was offline
    */
   async startWatching(projectPath: string, options?: IndexingOptions): Promise<void> {
     const absolutePath = path.resolve(projectPath);
+
+    logger.debug(
+      `🔍 Attempting to start watching for path: ${absolutePath} (resolved from ${projectPath})`
+    );
 
     if (this.watchedProjects.has(absolutePath)) {
       logger.info(`👁️ Already watching ${absolutePath}`);
       return;
     }
 
-    logger.info(`👁️ Starting file watcher for ${absolutePath}`);
+    // Check if we're in a build process before starting the watcher
+    const buildLockFile = path.join(process.cwd(), '.build-lock');
+    const buildLockExists = fs.existsSync(buildLockFile);
+    const isExplicitSkip = process.env.AMBIANCE_SKIP_INDEXING === '1';
+    const isBuildProcess = buildLockExists || isExplicitSkip;
+
+    logger.debug(`Checking for build process skips...`);
+
+    if (isBuildProcess) {
+      logger.debug(
+        `Skipping watcher startup due to: buildLockExists=${buildLockExists}, isExplicitSkip=${isExplicitSkip}`
+      );
+      return;
+    }
+
+    logger.info(`✅ Proceeding with watcher setup for ${absolutePath}`);
+
+    logger.info(`👁️ Starting file watcher for ${absolutePath} (cwd: ${process.cwd()})`);
 
     const ignorePatterns = await this.loadIgnorePatterns(absolutePath);
+    logger.debug(
+      `Loaded ${ignorePatterns.gitignore.length + ignorePatterns.cursorignore.length + ignorePatterns.vscodeignore.length + ignorePatterns.ambianceignore.length} ignore patterns`
+    );
 
     let watcher: fs.FSWatcher;
     try {
       watcher = fs.watch(absolutePath, { recursive: true }, async (eventType, filename) => {
         if (!filename) return;
 
+        // AGGRESSIVE BUILD PROCESS CHECK - skip if build lock file exists
+        const buildLockFile = path.join(process.cwd(), '.build-lock');
+        const buildLockExists = fs.existsSync(buildLockFile);
+        logger.debug(
+          `🔍 DEBUG BUILD LOCK: cwd=${process.cwd()}, lockFile=${buildLockFile}, exists=${buildLockExists}, filename=${filename}`
+        );
+        if (buildLockExists) {
+          logger.debug(
+            `🚫🚫🚫 BUILD LOCK FILE DETECTED: ${buildLockFile} exists! Skipping ${filename}`
+          );
+          try {
+            const content = fs.readFileSync(buildLockFile, 'utf8');
+            logger.debug(`🚫🚫🚫 BUILD LOCK CONTENT: "${content}"`);
+          } catch (e) {
+            logger.debug(`🚫🚫🚫 BUILD LOCK READ ERROR: ${e}`);
+          }
+          return;
+        }
+
         const filePath = path.join(absolutePath, filename);
 
-        // Check if file should be ignored
+        // ULTIMATE EARLY CHECK: Silently skip common ignored paths
+        // These are expected to be ignored and don't need warnings
+        if (
+          filename.includes('dist') ||
+          filename.includes('node_modules') ||
+          filename.includes('.git') ||
+          filePath.includes('\\dist\\') ||
+          filePath.includes('/dist/') ||
+          filePath.includes('\\node_modules\\') ||
+          filePath.includes('/node_modules/') ||
+          (filePath.includes('\\') && (filePath.includes('.git') || filePath.includes('/.git')))
+        ) {
+          // Silently skip - these are expected ignored patterns
+          return;
+        }
+
+        // Debug: log file events (only for non-ignored files to avoid spam)
+        const relativePath = path.relative(absolutePath, filePath);
+        if (relativePath.includes('dist') || relativePath.includes('.git')) {
+          logger.debug(
+            `🔍 Checking file: ${relativePath} (absolute: ${filePath}, project: ${absolutePath})`
+          );
+        }
+        if (
+          !relativePath.startsWith('node_modules') &&
+          !relativePath.startsWith('.git') &&
+          !relativePath.includes('dist')
+        ) {
+          logger.debug(`👁️ File event detected: ${relativePath}`);
+        }
+
+        // Check if file should be ignored (skip common ignored directories entirely)
+        // These are absolute checks that should NEVER be bypassed
+        if (
+          relativePath.includes('\\dist\\') ||
+          relativePath.includes('/dist/') ||
+          relativePath.startsWith('dist/') ||
+          relativePath.startsWith('dist\\') ||
+          relativePath === 'dist' ||
+          relativePath.includes('\\node_modules\\') ||
+          relativePath.includes('/node_modules/') ||
+          relativePath.startsWith('node_modules/') ||
+          relativePath.startsWith('node_modules\\') ||
+          relativePath === 'node_modules' ||
+          relativePath.includes('\\build\\') ||
+          relativePath.includes('/build/') ||
+          relativePath.startsWith('build/') ||
+          relativePath.startsWith('build\\') ||
+          relativePath === 'build' ||
+          relativePath.includes('\\out\\') ||
+          relativePath.includes('/out/') ||
+          relativePath.startsWith('out/') ||
+          relativePath.startsWith('out\\') ||
+          relativePath === 'out' ||
+          relativePath.includes('\\target\\') ||
+          relativePath.includes('/target/') ||
+          relativePath.startsWith('target/') ||
+          relativePath.startsWith('target\\') ||
+          relativePath === 'target' ||
+          relativePath.includes('\\bin\\') ||
+          relativePath.includes('/bin/') ||
+          relativePath.startsWith('bin/') ||
+          relativePath.startsWith('bin\\') ||
+          relativePath === 'bin' ||
+          relativePath.includes('\\obj\\') ||
+          relativePath.includes('/obj/') ||
+          relativePath.startsWith('obj/') ||
+          relativePath.startsWith('obj\\') ||
+          relativePath === 'obj' ||
+          relativePath.includes('\\lib\\') ||
+          relativePath.includes('/lib/') ||
+          relativePath.startsWith('lib/') ||
+          relativePath.startsWith('lib\\') ||
+          relativePath === 'lib' ||
+          relativePath.includes('\\esm\\') ||
+          relativePath.includes('/esm/') ||
+          relativePath.startsWith('esm/') ||
+          relativePath.startsWith('esm\\') ||
+          relativePath === 'esm' ||
+          relativePath.includes('\\cjs\\') ||
+          relativePath.includes('/cjs/') ||
+          relativePath.startsWith('cjs/') ||
+          relativePath.startsWith('cjs\\') ||
+          relativePath === 'cjs' ||
+          relativePath.includes('\\umd\\') ||
+          relativePath.includes('/umd/') ||
+          relativePath.startsWith('umd/') ||
+          relativePath.startsWith('umd\\') ||
+          relativePath === 'umd' ||
+          relativePath.includes('\\__pycache__\\') ||
+          relativePath.includes('/__pycache__/') ||
+          relativePath.startsWith('__pycache__/') ||
+          relativePath.startsWith('__pycache__\\') ||
+          relativePath === '__pycache__' ||
+          relativePath.includes('\\coverage\\') ||
+          relativePath.includes('/coverage/') ||
+          relativePath.startsWith('coverage/') ||
+          relativePath.startsWith('coverage\\') ||
+          relativePath === 'coverage' ||
+          (relativePath.includes('\\') &&
+            (relativePath.includes('.git') || relativePath.includes('/.git'))) ||
+          relativePath.startsWith('.git/') ||
+          relativePath.startsWith('.git\\') ||
+          relativePath === '.git'
+        ) {
+          return; // Always ignore these folders - no exceptions
+        }
         if (this.shouldIgnoreFile(filePath, absolutePath, ignorePatterns)) {
           return;
         }
 
-        // Debounce file changes
-        const debounceKey = `${absolutePath}:${filename}`;
-        clearTimeout((this as any)[`debounce_${debounceKey}`]);
-        (this as any)[`debounce_${debounceKey}`] = setTimeout(async () => {
-          try {
-            if (fs.existsSync(filePath)) {
-              logger.info(`📝 File changed: ${filename}, triggering incremental index`);
-              await this.indexProject(absolutePath, { pattern: filename });
+        // Check if file content actually changed
+        const hasChanged = await this.hasFileChanged(filePath);
+        if (!hasChanged) {
+          logger.debug(`📋 File accessed but content unchanged: ${filename}, skipping update`);
+          return;
+        }
+
+        // Queue processing with debouncing to prevent concurrent database operations
+        const projectKey = absolutePath;
+        const processingKey = `${projectKey}:${filename}`;
+
+        // Clear existing debounce for this specific file
+        clearTimeout((this as any)[`debounce_${processingKey}`]);
+        (this as any)[`debounce_${processingKey}`] = setTimeout(async () => {
+          logger.debug(`⏰ Processing queued for: ${filename}`);
+          await this.queueProcessing(projectKey, async () => {
+            try {
+              if (fs.existsSync(filePath)) {
+                logger.info(
+                  `📝 File content changed: ${filename}, triggering incremental embedding update`
+                );
+
+                // Get project info for embedding update
+                const projectInfo = await this.projectIdentifier.identifyProject(absolutePath);
+                if (projectInfo) {
+                  // Use incremental embedding update instead of full re-indexing
+                  const { LocalEmbeddingGenerator } = await import('./embeddingGenerator');
+                  const embeddingGenerator = new LocalEmbeddingGenerator();
+
+                  await embeddingGenerator.updateProjectEmbeddings(projectInfo.id, absolutePath, {
+                    files: [filename], // Only update the changed file
+                    batchSize: 1, // Process one file at a time to reduce database load
+                    rateLimit: 1000, // Slower rate limiting
+                  });
+
+                  logger.info(`✅ Incremental embedding update completed for: ${filename}`);
+                } else {
+                  logger.warn(`⚠️ Could not identify project for file: ${filename}`);
+                }
+              }
+            } catch (error) {
+              logger.error('❌ Incremental embedding update failed:', {
+                error: error instanceof Error ? error.message : String(error),
+              });
             }
-          } catch (error) {
-            logger.error('❌ Incremental indexing failed:', {
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }, options?.debounceMs ?? 180000); // 3 minute debounce - assumes active files are already in agent context
+          }); // Close queueProcessing
+        }, options?.debounceMs ?? 300000); // 5 minute debounce - gives more time for batching multiple changes
       });
 
+      // Initialize file hashes for existing files to avoid processing unchanged files
+      await this.initializeFileHashes(absolutePath, ignorePatterns);
+      logger.debug(`File hashes initialized`);
+
       this.watchedProjects.set(absolutePath, watcher);
+      logger.info(`✅ Watcher registered for ${absolutePath}`);
+
+      // Start periodic stale file check (every 5 minutes)
+      this.startPeriodicStaleCheck(absolutePath);
+      logger.info(`✅ Periodic stale check started for ${absolutePath}`);
+
       logger.info('Started watching for file changes: /test/project');
     } catch (error) {
       logger.error(
@@ -352,6 +550,58 @@ export class AutomaticIndexer {
       );
       throw error;
     }
+  }
+
+  /**
+   * Start periodic check for stale files (every 5 minutes)
+   */
+  private startPeriodicStaleCheck(projectPath: string): void {
+    const STALE_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes in milliseconds
+
+    // Clear any existing interval for this project
+    const existingInterval = this.staleCheckIntervals.get(projectPath);
+    if (existingInterval) {
+      clearInterval(existingInterval);
+    }
+
+    logger.info(`🔄 Starting periodic stale file check for ${projectPath} (every 5 minutes)`);
+
+    // Set up the interval
+    const intervalId = setInterval(async () => {
+      try {
+        logger.debug(`🔍 Running periodic stale file check for ${projectPath}`);
+
+        // Dynamically import to avoid circular dependencies
+        const { checkStaleFiles } = await import('../tools/localTools/embeddingManagement');
+
+        const result = await checkStaleFiles({
+          projectPath,
+          autoUpdate: true,
+          batchSize: 5,
+        });
+
+        if (result.staleCount > 0) {
+          logger.info(`✅ Periodic stale check: Updated ${result.staleCount} stale files`, {
+            projectPath,
+            staleCount: result.staleCount,
+            processedFiles: result.updateResult?.result?.processedFiles || 0,
+            embeddings: result.updateResult?.result?.embeddings || 0,
+          });
+        } else {
+          logger.debug(`✅ Periodic stale check: No stale files found`, {
+            projectPath,
+          });
+        }
+      } catch (error) {
+        logger.error(`❌ Periodic stale check failed for ${projectPath}`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        logger.debug(`🏁 Periodic stale check completed for ${projectPath}`);
+      }
+    }, STALE_CHECK_INTERVAL);
+
+    this.staleCheckIntervals.set(projectPath, intervalId);
   }
 
   /**
@@ -364,6 +614,15 @@ export class AutomaticIndexer {
     if (watcher) {
       watcher.close();
       this.watchedProjects.delete(absolutePath);
+
+      // Clear the periodic stale check interval
+      const intervalId = this.staleCheckIntervals.get(absolutePath);
+      if (intervalId) {
+        clearInterval(intervalId);
+        this.staleCheckIntervals.delete(absolutePath);
+        logger.info(`🛑 Stopped periodic stale check for ${absolutePath}`);
+      }
+
       logger.info(`Stopped watching: ${projectPath}`);
     }
   }
@@ -400,6 +659,53 @@ export class AutomaticIndexer {
       vscodeignore: [],
       ambianceignore: [],
     };
+
+    // Add default ignore patterns that are always applied
+    // These are common directories/files that should never be processed for embeddings
+    const defaultPatterns = [
+      'node_modules/**',
+      '.git/**',
+      'dist/**',
+      'build/**',
+      'out/**',
+      'target/**',
+      'bin/**',
+      'obj/**',
+      '.next/**',
+      '.nuxt/**',
+      '.output/**',
+      '.vercel/**',
+      '.netlify/**',
+      'coverage/**',
+      '.nyc_output/**',
+      '__pycache__/**',
+      '*.pyc',
+      '*.pyo',
+      '*.log',
+      '.DS_Store',
+      'Thumbs.db',
+      '.env*',
+      '*.tmp',
+      '*.temp',
+      '.cache/**',
+      '.parcel-cache/**',
+      '.vscode/**',
+      '.idea/**',
+      '*.swp',
+      '*.swo',
+      '*~',
+      // Additional build outputs
+      'lib/**',
+      'esm/**',
+      'cjs/**',
+      'umd/**',
+      'packages/**',
+      'artifacts/**',
+      'release/**',
+    ];
+
+    // Add default patterns to gitignore (they will be combined with actual .gitignore)
+    patterns.gitignore.push(...defaultPatterns);
 
     const ignoreFiles = [
       { file: '.gitignore', key: 'gitignore' as keyof IgnorePatterns },
@@ -506,6 +812,26 @@ export class AutomaticIndexer {
         '**/DEPRECATED/**',
         '**/_deprecated/**',
         '**/_DEPRECATED/**',
+        '**/legacy/**',
+        '**/LEGACY/**',
+        '**/_legacy/**',
+        '**/_LEGACY/**',
+        '**/backup/**',
+        '**/BACKUP/**',
+        '**/_backup/**',
+        '**/_BACKUP/**',
+        '**/archive/**',
+        '**/ARCHIVE/**',
+        '**/_archive/**',
+        '**/_ARCHIVE/**',
+        '**/outdated/**',
+        '**/OUTDATED/**',
+        '**/_outdated/**',
+        '**/_OUTDATED/**',
+        '**/obsolete/**',
+        '**/OBSOLETE/**',
+        '**/_obsolete/**',
+        '**/_OBSOLETE/**',
         '**/legacy/**',
         '**/LEGACY/**',
         '**/_legacy/**',
@@ -760,23 +1086,56 @@ export class AutomaticIndexer {
     logger.debug(`🔍 File discovery patterns`, {
       ignorePatternCount: allIgnorePatterns.length,
       hasNodeModulesIgnore: allIgnorePatterns.some(p => p.includes('node_modules')),
+      hasDistIgnore: allIgnorePatterns.some(p => p.includes('dist')),
       includePatternCount: includePatterns.length,
+      samplePatterns: allIgnorePatterns.slice(0, 5),
     });
 
     try {
       const { globby } = await import('globby');
+      // Get all files first, then filter manually - globby ignore patterns seem unreliable
       let files = await globby(includePatterns, {
         cwd: projectPath,
-        ignore: allIgnorePatterns,
         absolute: false,
         dot: false,
+        onlyFiles: true,
       });
 
-      // Additional filtering to ensure node_modules and other patterns are ignored
-      // This provides a safety net in case globby ignore patterns don't work as expected
+      logger.debug(`🔍 Globby returned ${files.length} files before filtering`, {
+        sampleFiles: files.slice(0, 5),
+        hasDistFiles: files.some(f => f.startsWith('dist/')),
+        totalDistFiles: files.filter(f => f.startsWith('dist/')).length,
+      });
+
+      // Primary filtering to ignore common patterns - now the main filtering mechanism
       const shouldIgnoreFile = (filePath: string): boolean => {
-        // Check if any part of the path contains ignored patterns
-        const pathParts = filePath.split(/[/\\]/);
+        // Normalize path separators for cross-platform compatibility
+        const normalizedFilePath = filePath.replace(/\\/g, '/');
+
+        // Check against all ignore patterns from gitignore and defaults
+        for (const pattern of allIgnorePatterns) {
+          const normalizedPattern = pattern.replace(/\\/g, '/');
+
+          if (normalizedPattern.endsWith('/**')) {
+            const dirPattern = normalizedPattern.slice(0, -3);
+            if (normalizedFilePath.startsWith(dirPattern + '/')) {
+              return true;
+            }
+          } else if (normalizedPattern.includes('*')) {
+            const regex = new RegExp(normalizedPattern.replace(/\*/g, '.*'));
+            if (regex.test(normalizedFilePath)) {
+              return true;
+            }
+          } else if (
+            normalizedFilePath === normalizedPattern ||
+            normalizedFilePath.startsWith(normalizedPattern + '/')
+          ) {
+            return true;
+          }
+        }
+
+        // Additional safety checks for common ignore patterns
+        const pathParts = normalizedFilePath.split('/');
         for (const part of pathParts) {
           // Check for common ignore patterns
           if (
@@ -784,12 +1143,24 @@ export class AutomaticIndexer {
             part === '.git' ||
             part === 'dist' ||
             part === 'build' ||
+            part === 'out' ||
+            part === 'target' ||
+            part === 'bin' ||
+            part === 'obj' ||
+            part === 'lib' ||
+            part === 'esm' ||
+            part === 'cjs' ||
+            part === 'umd' ||
             part === '.next' ||
             part === 'coverage' ||
+            part === '__pycache__' ||
             part.startsWith('.') ||
             part.includes('.min.') ||
             part.includes('.test.') ||
-            part.includes('.spec.')
+            part.includes('.spec.') ||
+            part.endsWith('.pyc') ||
+            part.endsWith('.pyo') ||
+            part.endsWith('.log')
           ) {
             return true;
           }
@@ -823,12 +1194,99 @@ export class AutomaticIndexer {
     }
   }
 
+  /**
+   * Calculate SHA-256 hash of file content
+   */
+  private async getFileHash(filePath: string): Promise<string | null> {
+    try {
+      const content = fs.readFileSync(filePath);
+      const crypto = await import('crypto');
+      return crypto.default.createHash('sha256').update(content).digest('hex');
+    } catch (error) {
+      logger.debug(`Could not hash file ${filePath}`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Check if file content actually changed
+   */
+  private async hasFileChanged(filePath: string): Promise<boolean> {
+    const currentHash = await this.getFileHash(filePath);
+    if (!currentHash) return false;
+
+    const previousHash = this.fileHashes.get(filePath);
+    const hasChanged = previousHash !== currentHash;
+
+    // Update stored hash
+    this.fileHashes.set(filePath, currentHash);
+
+    return hasChanged;
+  }
+
+  /**
+   * Initialize file hashes for existing files to prevent processing unchanged files
+   */
+  private async initializeFileHashes(
+    projectPath: string,
+    ignorePatterns: IgnorePatterns
+  ): Promise<void> {
+    try {
+      logger.debug('Initializing file hashes for existing files');
+
+      const files = await this.discoverFiles(projectPath, ignorePatterns, undefined);
+      let processedCount = 0;
+
+      for (const file of files) {
+        const filePath = path.join(projectPath, file);
+        if (fs.existsSync(filePath) && !fs.statSync(filePath).isDirectory()) {
+          const hash = await this.getFileHash(filePath);
+          if (hash) {
+            this.fileHashes.set(filePath, hash);
+            processedCount++;
+          }
+        }
+
+        // Log progress every 100 files
+        if (processedCount % 100 === 0 && processedCount > 0) {
+          logger.debug(`Initialized hashes for ${processedCount} files`);
+        }
+      }
+
+      logger.info(`✅ Initialized file hashes for ${processedCount} existing files`);
+    } catch (error) {
+      logger.warn('⚠️ Failed to initialize file hashes:', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private shouldIgnoreFile(
     filePath: string,
     projectPath: string,
     ignorePatterns: IgnorePatterns
   ): boolean {
     const relativePath = path.relative(projectPath, filePath);
+
+    // Early check for common ignored directories - these should NEVER be processed
+    if (
+      relativePath.startsWith('.git') ||
+      relativePath.startsWith('.git/') ||
+      relativePath.startsWith('.git\\') ||
+      relativePath.startsWith('node_modules') ||
+      relativePath.startsWith('node_modules/') ||
+      relativePath.startsWith('node_modules\\') ||
+      relativePath.startsWith('dist') ||
+      relativePath.startsWith('dist/') ||
+      relativePath.startsWith('dist\\') ||
+      relativePath === '.git' ||
+      relativePath === 'node_modules' ||
+      relativePath === 'dist'
+    ) {
+      return true;
+    }
 
     const allPatterns = [
       ...ignorePatterns.gitignore,
@@ -837,18 +1295,61 @@ export class AutomaticIndexer {
       ...ignorePatterns.ambianceignore,
     ];
 
-    return allPatterns.some(pattern => {
+    const shouldIgnore = allPatterns.some(pattern => {
+      // Normalize path separators for cross-platform compatibility
+      const normalizedRelativePath = relativePath.replace(/\\/g, '/');
+      const normalizedPattern = pattern.replace(/\\/g, '/');
+
       // Simple pattern matching (could be enhanced with minimatch)
-      if (pattern.endsWith('/**')) {
-        const dirPattern = pattern.slice(0, -3);
-        return relativePath.startsWith(dirPattern + '/') || relativePath === dirPattern;
+      if (normalizedPattern.endsWith('/**')) {
+        const dirPattern = normalizedPattern.slice(0, -3);
+        const matches =
+          normalizedRelativePath.startsWith(dirPattern + '/') ||
+          normalizedRelativePath === dirPattern;
+        if (matches) return true;
       }
-      if (pattern.includes('*')) {
-        const regex = new RegExp(pattern.replace(/\*/g, '.*'));
-        return regex.test(relativePath);
+      if (normalizedPattern.includes('*')) {
+        const regex = new RegExp(normalizedPattern.replace(/\*/g, '.*'));
+        const matches = regex.test(normalizedRelativePath);
+        if (matches) return true;
       }
-      return relativePath === pattern || relativePath.startsWith(pattern + '/');
+      const matches =
+        normalizedRelativePath === normalizedPattern ||
+        normalizedRelativePath.startsWith(normalizedPattern + '/');
+      if (matches) return true;
+      return false;
     });
+
+    return shouldIgnore;
+  }
+
+  private async queueProcessing(projectKey: string, operation: () => Promise<void>): Promise<void> {
+    // Wait for any existing processing to complete, then run this operation
+    const existingPromise = this.processingQueue.get(projectKey);
+    if (existingPromise) {
+      logger.debug(`⏳ Waiting for existing processing to complete for project: ${projectKey}`);
+      await existingPromise;
+    }
+
+    // Create a new promise for this operation
+    const operationPromise = this.createQueuedOperation(projectKey, operation);
+
+    // Store the promise
+    this.processingQueue.set(projectKey, operationPromise);
+
+    // Wait for this operation to complete
+    await operationPromise;
+  }
+
+  private createQueuedOperation(projectKey: string, operation: () => Promise<void>): Promise<void> {
+    return (async () => {
+      try {
+        await operation();
+      } finally {
+        // Clean up the queue entry
+        this.processingQueue.delete(projectKey);
+      }
+    })();
   }
 
   private async filterChangedFiles(projectPath: string, files: string[]): Promise<string[]> {

@@ -46,14 +46,14 @@ export interface EnvironmentAnalysis {
 /**
  * Detect environment variable usage patterns
  */
-export function detectEnvironmentUsage(
+export async function detectEnvironmentUsage(
   files: FileInfo[],
   components: ComponentInfo[]
-): {
+): Promise<{
   nextPublicVars: string[];
   clientLeaks: EnvironmentLeak[];
   allEnvVars: Set<string>;
-} {
+}> {
   const nextPublicVars: string[] = [];
   const clientLeaks: EnvironmentLeak[] = [];
   const allEnvVars = new Set<string>();
@@ -68,63 +68,53 @@ export function detectEnvironmentUsage(
       continue;
 
     try {
-      const content = readFile(file.absPath, 'utf-8').then(content => {
-        const lines = content.split('\n');
+      const content = await readFile(file.absPath, 'utf-8');
+      const lines = content.split('\n');
+      lines.forEach((line, index) => {
+        const envRegex = /process\.env\.([A-Z0-9_]+)/g;
+        let match: RegExpExecArray | null;
+        while ((match = envRegex.exec(line)) !== null) {
+          const envKey = match[1];
+          allEnvVars.add(envKey);
+          const isRouteHandler = file.relPath.includes('/route.');
+          const isClientComponent = components.some(
+            comp => comp.file === file.relPath && comp.kind === 'client'
+          );
+          const hasUseClient = content.includes("'use client'") || content.includes('"use client"');
+          const isClientCode = !isRouteHandler && (isClientComponent || hasUseClient);
 
-        lines.forEach((line, index) => {
-          // Match process.env.X patterns
-          const envRegex = /process\.env\.([A-Z0-9_]+)/g;
-          let match;
-          while ((match = envRegex.exec(line)) !== null) {
-            const envKey = match[1];
-            allEnvVars.add(envKey);
-
-            // Determine if this is client or server code
-            // Route handlers are always server-side, regardless of 'use client' directive
-            const isRouteHandler = file.relPath.includes('/route.');
-            const isClientComponent = components.some(
-              comp => comp.file === file.relPath && comp.kind === 'client'
-            );
-            const hasUseClient =
-              content.includes("'use client'") || content.includes('"use client"');
-            const isClientCode = !isRouteHandler && (isClientComponent || hasUseClient);
-
-            if (isClientCode) {
-              // Check if it's a NEXT_PUBLIC variable
-              if (envKey.startsWith('NEXT_PUBLIC_')) {
-                if (!nextPublicVars.includes(envKey)) {
-                  nextPublicVars.push(envKey);
-                }
-              } else {
-                // This is a leak - server-only var used in client code
-                clientLeaks.push({
-                  key: envKey,
-                  file: toPosixPath(file.relPath),
-                  line: index + 1,
-                  context: line.trim().substring(0, 80) + (line.length > 80 ? '...' : ''),
-                  severity: 'high',
-                });
+          if (isClientCode) {
+            if (envKey.startsWith('NEXT_PUBLIC_')) {
+              if (!nextPublicVars.includes(envKey)) {
+                nextPublicVars.push(envKey);
               }
+            } else {
+              clientLeaks.push({
+                key: envKey,
+                file: toPosixPath(file.relPath),
+                line: index + 1,
+                context: line.trim().substring(0, 80) + (line.length > 80 ? '...' : ''),
+                severity: 'high',
+              });
             }
           }
+        }
 
-          // Also check for destructured environment variables
-          const destructuredRegex = /const\s*{\s*([^}]*)\s*}\s*=\s*process\.env/g;
-          const destructuredMatch = destructuredRegex.exec(line);
-          if (destructuredMatch) {
-            const destructuredVars = destructuredMatch[1];
-            // Split by comma and extract variable names
-            const vars = destructuredVars.split(',').map(v => v.trim().split(':')[0].trim());
-            vars.forEach(varName => {
-              if (varName && varName !== '...') {
-                allEnvVars.add(varName);
-              }
-            });
-          }
-        });
+        const destructuredRegex = /const\s*{\s*([^}]*)\s*}\s*=\s*process\.env/g;
+        let destructuredMatch: RegExpExecArray | null;
+        while ((destructuredMatch = destructuredRegex.exec(line)) !== null) {
+          const vars = destructuredMatch[1]
+            .split(',')
+            .map(raw => raw.trim().split(':')[0].trim())
+            .filter(varName => varName && varName !== '...');
+          vars.forEach(varName => allEnvVars.add(varName));
+        }
       });
     } catch (error) {
-      // Continue with next file
+      logger.debug('Failed to analyze environment usage for file', {
+        file: toPosixPath(file.relPath),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -134,10 +124,10 @@ export function detectEnvironmentUsage(
 /**
  * Analyze environment variable configuration files
  */
-function analyzeEnvironmentConfig(files: FileInfo[]): {
+async function analyzeEnvironmentConfig(files: FileInfo[]): Promise<{
   definedVars: Set<string>;
   configFiles: string[];
-} {
+}> {
   const definedVars = new Set<string>();
   const configFiles: string[] = [];
 
@@ -148,18 +138,19 @@ function analyzeEnvironmentConfig(files: FileInfo[]): {
     if (fileName.startsWith('.env')) {
       configFiles.push(toPosixPath(file.relPath));
       try {
-        const content = readFile(file.absPath, 'utf-8').then(content => {
-          const lines = content.split('\n');
-          lines.forEach(line => {
-            // Match KEY=VALUE patterns
-            const envMatch = line.match(/^([A-Z0-9_]+)=/);
-            if (envMatch) {
-              definedVars.add(envMatch[1]);
-            }
-          });
+        const content = await readFile(file.absPath, 'utf-8');
+        const lines = content.split('\n');
+        lines.forEach(line => {
+          const envMatch = line.match(/^([A-Z0-9_]+)=/);
+          if (envMatch) {
+            definedVars.add(envMatch[1]);
+          }
         });
       } catch (error) {
-        // Continue with next file
+        logger.debug('Failed to parse environment file', {
+          file: toPosixPath(file.relPath),
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
@@ -167,24 +158,24 @@ function analyzeEnvironmentConfig(files: FileInfo[]): {
     if (fileName === 'next.config.js' || fileName === 'next.config.ts') {
       configFiles.push(toPosixPath(file.relPath));
       try {
-        const content = readFile(file.absPath, 'utf-8').then(content => {
-          // Look for env configuration
-          const envRegex = /env:\s*{([^}]*)}/g;
-          let match;
-          while ((match = envRegex.exec(content)) !== null) {
-            const envBlock = match[1];
-            // Extract variable names from env block
-            const varMatches = envBlock.match(/([A-Z0-9_]+):/g);
-            if (varMatches) {
-              varMatches.forEach(varMatch => {
-                const varName = varMatch.replace(':', '');
-                definedVars.add(varName);
-              });
-            }
+        const content = await readFile(file.absPath, 'utf-8');
+        const envRegex = /env:\s*{([^}]*)}/g;
+        let match: RegExpExecArray | null;
+        while ((match = envRegex.exec(content)) !== null) {
+          const envBlock = match[1];
+          const varMatches = envBlock.match(/([A-Z0-9_]+):/g);
+          if (varMatches) {
+            varMatches.forEach(varMatch => {
+              const varName = varMatch.replace(':', '');
+              definedVars.add(varName);
+            });
           }
-        });
+        }
       } catch (error) {
-        // Continue with next file
+        logger.debug('Failed to parse Next.js config file for env vars', {
+          file: toPosixPath(file.relPath),
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   }
@@ -338,7 +329,12 @@ export async function detectAllLeaks(
       const rel = toPosixPath(file.relPath);
       if (content.includes("'use client'") || content.includes('"use client"'))
         seedClientFiles.add(rel);
-    } catch {}
+    } catch (error) {
+      logger.debug('Failed to inspect file for client seed classification', {
+        file: toPosixPath(file.relPath),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   components
     .filter(c => c.kind === 'client')
@@ -368,11 +364,21 @@ export async function detectAllLeaks(
   const reachable = new Set<string>();
   const queue = [...entrypoints];
   while (queue.length) {
-    const cur = queue.shift()!;
-    if (reachable.has(cur)) continue;
-    reachable.add(cur);
-    const next = importsGraph.get(cur);
-    if (next) for (const n of next) if (!reachable.has(n)) queue.push(n);
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    if (reachable.has(current)) continue;
+    reachable.add(current);
+    const next = importsGraph.get(current);
+    if (!next) {
+      continue;
+    }
+    for (const candidate of next) {
+      if (!reachable.has(candidate)) {
+        queue.push(candidate);
+      }
+    }
   }
 
   for (const file of files) {
@@ -425,11 +431,12 @@ export async function detectAllLeaks(
           // Only flag when these are used as actual API calls, not in strings, comments, or type definitions
           const domPatterns = [
             // Direct property access: window., document., etc.
-            /\b(window|document|navigator|localStorage|sessionStorage)\./g,
+            /\b(window|document|navigator|localStorage|sessionStorage|indexedDB|caches)\./g,
             // Function calls: window(), document(), etc.
-            /\b(window|document|navigator|localStorage|sessionStorage)\s*\(/g,
+            /\b(window|document|navigator|localStorage|sessionStorage|indexedDB|caches)\s*\(/g,
             // Assignment or comparison: = window, === document, etc.
-            /(?:=|\?|\:|\[|\(|\s)\s*(window|document|navigator|localStorage|sessionStorage)\s*(?:\)|\]|\;|\,|\}|\||\&|$)/g,
+            /(?:=|\?|\[|\(|\s|:)\s*(window|document|navigator|localStorage|sessionStorage|indexedDB|caches)\s*(?:\)|\]|;|,|}|\||&|$)/g,
+            /navigator\.storage\b/g,
           ];
 
           for (const pattern of domPatterns) {
@@ -562,7 +569,10 @@ export async function detectAllLeaks(
         }
       });
     } catch (error) {
-      // Continue with next file
+      logger.debug('Failed to analyze environment leak patterns for file', {
+        file: toPosixPath(file.relPath),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

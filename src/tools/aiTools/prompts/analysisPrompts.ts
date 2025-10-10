@@ -71,7 +71,14 @@ export function createAnalysisSystemPrompt(
       ' Organize your response with specific action items, implementation priorities, and measurable outcomes.';
   }
 
-  return basePrompt + taskSpecific + complexityNote + explanationNote + formatNote;
+  return (
+    basePrompt +
+    taskSpecific +
+    complexityNote +
+    explanationNote +
+    formatNote +
+    ' Avoid starting responses with affirmative words like "Certainly!" or "Of course!".'
+  );
 }
 
 export function createAnalysisUserPrompt(

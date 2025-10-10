@@ -19,6 +19,7 @@ import { LocalEmbeddingStorage, SimilarChunk } from './embeddingStorage';
 import { semanticCompactor } from '../core/compactor/semanticCompactor';
 import { ProjectIdentifier } from './projectIdentifier';
 import { openaiService } from '../core/openaiService';
+import { compileExcludePatterns, isExcludedPath } from '../tools/utils/toolHelpers';
 
 export interface EnhancedContextOptions {
   projectPath: string;
@@ -26,6 +27,7 @@ export interface EnhancedContextOptions {
   query?: string;
   taskType?: 'debug' | 'implement' | 'understand' | 'refactor';
   format?: 'xml' | 'structured' | 'compact' | 'enhanced';
+  excludePatterns?: string[];
 
   // Embedding options
   useEmbeddings?: boolean;
@@ -80,10 +82,67 @@ export class EnhancedSemanticCompactor {
       taskType: options.taskType || 'understand',
     });
 
+    // Handle exclude patterns by creating a temporary directory if needed
+    let analysisPath = options.projectPath;
+    let cleanupTempDir: (() => Promise<void>) | null = null;
+
     try {
       // Get project info
       const projectInfo = await this.projectIdentifier.identifyProject(options.projectPath);
       const projectId = projectInfo.id;
+
+      const excludeRegexes = compileExcludePatterns(options.excludePatterns);
+
+      if (excludeRegexes.length > 0) {
+        const fs = require('fs').promises;
+        const path = require('path');
+        const os = require('os');
+        const { FileDiscovery } = await import('../core/compactor/fileDiscovery.js');
+
+        const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'enhanced-context-'));
+        logger.info('📁 Creating temporary directory for exclude pattern filtering', { tempDir });
+
+        try {
+          const fileDiscovery = new FileDiscovery(options.projectPath, {
+            maxFileSize: 200000,
+          });
+
+          let allFiles = await fileDiscovery.discoverFiles();
+
+          allFiles = allFiles.filter(file => !isExcludedPath(file.relPath, excludeRegexes));
+
+          logger.info('📊 Applied exclude patterns to enhanced context', {
+            filteredCount: allFiles.length,
+            excludePatterns: options.excludePatterns,
+          });
+
+          // Copy filtered files to temp directory
+          for (const file of allFiles) {
+            const sourcePath = file.absPath;
+            const relativePath = path.relative(options.projectPath, sourcePath);
+            const destPath = path.join(tempDir, relativePath);
+
+            await fs.mkdir(path.dirname(destPath), { recursive: true });
+            await fs.copyFile(sourcePath, destPath);
+          }
+
+          analysisPath = tempDir;
+          cleanupTempDir = async () => {
+            try {
+              await fs.rm(tempDir, { recursive: true, force: true });
+              logger.debug('🧹 Cleaned up temporary directory', { tempDir });
+            } catch (error) {
+              logger.warn('Failed to cleanup temporary directory', { tempDir, error });
+            }
+          };
+        } catch (error) {
+          // Clean up temp directory on error
+          try {
+            await fs.rm(tempDir, { recursive: true, force: true });
+          } catch {}
+          throw error;
+        }
+      }
 
       // First, generate standard semantic compaction
       let baseContext: any = null;
@@ -93,7 +152,7 @@ export class EnhancedSemanticCompactor {
           maxTokens: options.maxTokens,
         });
 
-        baseContext = await semanticCompactor.compactProject(options.projectPath, {
+        baseContext = await semanticCompactor.compactProject(analysisPath, {
           maxTokens: options.maxTokens,
           maxTotalTokens: options.maxTokens,
           includeSourceCode: false,
@@ -221,8 +280,26 @@ Try using a more specific directory or check the project path.`;
         embeddingGenerationInProgress: generationStatus?.isGenerating || false,
       });
 
+      // Clean up temporary directory if created
+      if (cleanupTempDir) {
+        try {
+          await cleanupTempDir();
+        } catch (cleanupError) {
+          logger.warn('Failed to cleanup temporary directory', { error: cleanupError });
+        }
+      }
+
       return result;
     } catch (error) {
+      // Clean up temporary directory on error
+      if (cleanupTempDir) {
+        try {
+          await cleanupTempDir();
+        } catch (cleanupError) {
+          logger.warn('Failed to cleanup temporary directory on error', { error: cleanupError });
+        }
+      }
+
       logger.error('❌ Enhanced context generation failed', {
         error: error instanceof Error ? error.message : String(error),
         projectPath: options.projectPath,

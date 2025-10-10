@@ -19,6 +19,8 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import { minimatch } from 'minimatch';
 
+import { logger } from '../utils/logger';
+
 export interface ProjectInfo {
   id: string;
   name: string;
@@ -132,7 +134,7 @@ export class ProjectIdentifier {
         isClean,
       };
     } catch (error) {
-      console.warn('Failed to get git info:', error);
+      logger.warn('Failed to get git info', { error });
       return undefined;
     }
   }
@@ -325,7 +327,7 @@ export class ProjectIdentifier {
         }
       }
     } catch (error) {
-      console.warn('Error scanning workspace for projects:', error);
+      logger.warn('Error scanning workspace for projects', { error });
     }
 
     return projects;
@@ -656,7 +658,7 @@ export async function loadIgnorePatterns(projectPath: string): Promise<string[]>
         patterns.push(...filePatterns);
       }
     } catch (error) {
-      console.warn(`Failed to read ignore file ${ignoreFile}:`, error);
+      logger.warn('Failed to read ignore file', { ignoreFile, error });
     }
   }
 

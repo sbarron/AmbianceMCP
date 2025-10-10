@@ -44,6 +44,8 @@ import { logger } from './utils/logger';
 import { openaiService } from './core/openaiService';
 import { apiClient } from './client/apiClient';
 import { initializeAutoIndexing } from './startup/autoIndexingStartup';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Get package version for logging
 const packageJson = require('../../package.json');
@@ -138,6 +140,9 @@ class AmbianceMCPServer {
       local_debug_context: handleLocalDebugContext,
       ast_grep_search: handleAstGrep,
     };
+
+    // Note: ambianceTools are CLI-only for manual control.
+    // Automatic indexing runs via autoIndexingStartup on server initialization.
 
     this.validKeys = { openai: false, ambiance: false };
 
@@ -250,6 +255,28 @@ class AmbianceMCPServer {
 
     // Log path configuration for debugging
     logPathConfiguration();
+
+    // Skip automatic indexing during build processes
+    const isBuildProcess =
+      process.env.AMBIANCE_SKIP_INDEXING === '1' ||
+      process.env.npm_lifecycle_event ||
+      process.env.npm_package_scripts ||
+      process.env.npm_config_argv ||
+      process.env.TSC_NONPOLLING_WATCHER === 'true' ||
+      process.argv.some(
+        arg => arg.includes('tsc') || arg.includes('typescript') || arg.includes('npm')
+      ) ||
+      process.mainModule?.filename?.includes('tsc') ||
+      process.mainModule?.filename?.includes('npm') ||
+      process.argv[0]?.includes('tsc') ||
+      process.argv[0]?.includes('npm') ||
+      (process.argv[1] && process.argv[1].includes('-e')) ||
+      process.argv.some(arg => arg.includes('copy-facets-config') || arg.includes('copy-schemas'));
+
+    if (isBuildProcess) {
+      logger.debug('🔨 Build process detected - skipping automatic indexing in MCP server');
+      return;
+    }
 
     // Initialize automatic indexing and embedding generation in background
     if (this.validKeys.openai || this.validKeys.ambiance || useLocalEmbeddings) {
@@ -383,6 +410,54 @@ class AmbianceMCPServer {
   async start() {
     logger.info('🌟 Starting MCP Server with stdio transport');
 
+    // Create instance-specific lock file to allow multiple agents/instances
+    const lockFile = path.join(process.cwd(), `.ambiance-mcp-${process.pid}.lock`);
+    try {
+      // Clean up any stale lock files from previous runs (older than 10 minutes)
+      const lockDir = process.cwd();
+      const lockFiles = fs
+        .readdirSync(lockDir)
+        .filter(f => f.startsWith('.ambiance-mcp-') && f.endsWith('.lock'));
+
+      for (const file of lockFiles) {
+        const filePath = path.join(lockDir, file);
+        try {
+          const lockData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          const now = Date.now();
+          const lockAge = now - lockData.timestamp;
+
+          // Remove stale locks (older than 10 minutes)
+          if (lockAge > 10 * 60 * 1000) {
+            logger.debug(
+              `🗑️ Removing stale lock file: ${file} (age: ${Math.round(lockAge / 1000 / 60)}min)`
+            );
+            fs.unlinkSync(filePath);
+          }
+        } catch (e) {
+          // If we can't read/parse the lock file, remove it
+          logger.debug(`🗑️ Removing invalid lock file: ${file}`);
+          fs.unlinkSync(filePath);
+        }
+      }
+
+      // Create new instance-specific lock file
+      const lockData = {
+        pid: process.pid,
+        timestamp: Date.now(),
+        version: packageJson.version,
+        workspace: process.env.WORKSPACE_FOLDER || process.cwd(),
+      };
+      fs.writeFileSync(lockFile, JSON.stringify(lockData, null, 2));
+      logger.info('🔒 Created instance-specific lock file', {
+        lockFile: path.basename(lockFile),
+        pid: process.pid,
+      });
+    } catch (error) {
+      logger.warn('⚠️ Could not create lock file, continuing anyway', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     try {
       // Initialize async components
       await this.initializeAsync();
@@ -403,13 +478,29 @@ class AmbianceMCPServer {
 }
 
 // Graceful shutdown
+const cleanupLockFile = () => {
+  try {
+    const lockFile = path.join(process.cwd(), `.ambiance-mcp-${process.pid}.lock`);
+    if (fs.existsSync(lockFile)) {
+      fs.unlinkSync(lockFile);
+      logger.info('🔓 Removed instance lock file', { pid: process.pid });
+    }
+  } catch (error) {
+    logger.warn('⚠️ Could not remove lock file during shutdown', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
 process.on('SIGINT', () => {
   logger.info('🔄 Received SIGINT, shutting down gracefully...');
+  cleanupLockFile();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   logger.info('🔄 Received SIGTERM, shutting down gracefully...');
+  cleanupLockFile();
   process.exit(0);
 });
 

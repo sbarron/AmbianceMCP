@@ -96,6 +96,9 @@ describe('LocalEmbeddingGenerator', () => {
     mockStorage = new LocalEmbeddingStorage() as jest.Mocked<LocalEmbeddingStorage>;
     LocalEmbeddingStorage.isEnabled = jest.fn().mockReturnValue(true);
 
+    // Add the deleteEmbeddingsByFile method to the mock
+    mockStorage.deleteEmbeddingsByFile = jest.fn().mockResolvedValue(5);
+
     // Setup apiClient mock with successful response
     mockApiClient = {
       post: jest.fn().mockResolvedValue({
@@ -317,16 +320,23 @@ describe('LocalEmbeddingGenerator', () => {
       // @ts-ignore - accessing private static for testing
       LocalEmbeddingGenerator.providerFailures.clear();
 
-      // Set up to use OpenAI provider
+      // Set up to use OpenAI provider and disable local embeddings
       process.env.USE_OPENAI_EMBEDDINGS = 'true';
       process.env.OPENAI_API_KEY = 'test-key';
+      process.env.USE_LOCAL_EMBEDDINGS = 'false'; // Disable local fallback
       mockOpenAIService.isReady.mockReturnValue(true);
       mockOpenAIService.getClient.mockReturnValue({}); // Mock OpenAI client as available
 
       // Create generator with OpenAI enabled
       const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
 
-      mockApiClient.generateEmbeddings.mockRejectedValue(new Error('API Error'));
+      // Mock the OpenAI client to throw an error
+      const mockOpenAIClient = {
+        embeddings: {
+          create: jest.fn().mockRejectedValue(new Error('API Error')),
+        },
+      };
+      mockOpenAIService.getClient.mockReturnValue(mockOpenAIClient);
 
       const result = await openaiGenerator.generateProjectEmbeddings(
         mockProjectId,
@@ -341,6 +351,7 @@ describe('LocalEmbeddingGenerator', () => {
       // Clean up
       delete process.env.USE_OPENAI_EMBEDDINGS;
       delete process.env.OPENAI_API_KEY;
+      delete process.env.USE_LOCAL_EMBEDDINGS;
       mockOpenAIService.isReady.mockReset();
       mockOpenAIService.getClient.mockReset();
     });
@@ -430,9 +441,17 @@ describe('LocalEmbeddingGenerator', () => {
       // Create generator with OpenAI enabled and local disabled
       const openaiGenerator = new LocalEmbeddingGenerator(mockStorage);
 
-      mockApiClient.generateEmbeddings.mockRejectedValue(new Error('API Error'));
+      // Mock the OpenAI client to throw an error
+      const mockOpenAIClient = {
+        embeddings: {
+          create: jest.fn().mockRejectedValue(new Error('API Error')),
+        },
+      };
+      mockOpenAIService.getClient.mockReturnValue(mockOpenAIClient);
 
-      await expect(openaiGenerator.generateQueryEmbedding('test')).rejects.toThrow();
+      await expect(openaiGenerator.generateQueryEmbedding('test')).rejects.toThrow(
+        'Embedding generation failed with all providers'
+      );
 
       // Clean up
       delete process.env.USE_OPENAI_EMBEDDINGS;
@@ -532,21 +551,20 @@ describe('LocalEmbeddingGenerator', () => {
       // Mock getDefaultLocalProvider to return the failing provider for this generator
       (getDefaultLocalProvider as jest.Mock).mockReturnValue(failingLocalProvider);
 
-      mockApiClient.generateEmbeddings.mockResolvedValue({
-        embeddings: [[0.1, 0.2, 0.3]],
-        model: 'text-embedding-3-small',
-        dimensions: 1536,
-        input_type: 'document',
-        encoding_format: 'float32',
-        total_tokens: 10,
-        processing_time_ms: 100,
-        provider: 'openai',
-      });
+      // Mock the OpenAI client to return successful results
+      const mockOpenAIClient = {
+        embeddings: {
+          create: jest.fn().mockResolvedValue({
+            data: [{ embedding: [0.1, 0.2, 0.3] }],
+          }),
+        },
+      };
+      mockOpenAIService.getClient.mockReturnValue(mockOpenAIClient);
 
       const result = await openaiGenerator.generateQueryEmbedding('test');
 
       expect(failingLocalProvider.generateEmbeddings).toHaveBeenCalled();
-      expect(mockApiClient.generateEmbeddings).toHaveBeenCalled();
+      expect(mockOpenAIClient.embeddings.create).toHaveBeenCalled();
       expect(mockLogger.error).toHaveBeenCalled();
       expect(result).toEqual([0.1, 0.2, 0.3]);
 

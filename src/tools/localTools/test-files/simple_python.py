@@ -11,3 +11,4 @@ class MyClass:
         
     def greet(self):
         return f"Hi from {self.name}"
+

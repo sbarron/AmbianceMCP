@@ -15,6 +15,7 @@ import { logger } from '../../utils/logger';
 import * as path from 'path';
 import { estimateTokens as estimateTokensShared } from '../utils/toolHelpers';
 import { validateAndResolvePath } from '../utils/pathUtils';
+import { compileExcludePatterns, isExcludedPath } from '../utils/toolHelpers';
 
 // ===== API INTERFACES =====
 
@@ -28,6 +29,7 @@ export interface LocalContextRequest {
   useProjectHintsCache?: boolean;
   astQueries?: AstQuery[];
   attackPlan?: 'auto' | 'init-read-write' | 'api-route' | 'error-driven' | 'auth';
+  excludePatterns?: string[];
 }
 
 export interface LocalContextResponse {
@@ -272,7 +274,7 @@ function detectTopic(q: string): Topic {
   return 'unknown';
 }
 
-const UNIVERSAL_NEGATIVES = [
+export const UNIVERSAL_NEGATIVES = [
   '**/*.test.*',
   '**/*.spec.*',
   '**/__tests__/**',
@@ -289,6 +291,8 @@ const UNIVERSAL_NEGATIVES = [
   '**/dist/**',
   '**/build/**',
   '**/projection_matrix.*',
+  '**/*.md',
+  '**/README*',
 ];
 
 const STOPLIST_BY_TOPIC: Record<Topic, string[]> = {
@@ -388,19 +392,27 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
     // 3.5 Topic-aware file prioritization and stoplist filtering
     const prioritizedFiles = prioritizeFilesForTopic(indices.files, topic);
 
+    const customExcludePatterns = request.excludePatterns || [];
+    const allExcludePatterns = [...UNIVERSAL_NEGATIVES, ...customExcludePatterns];
+    const excludeMatchers = compileExcludePatterns(allExcludePatterns);
+
+    const filteredFiles = prioritizedFiles.filter(
+      file => !isExcludedPath(file.relPath, excludeMatchers)
+    );
+
     // 4. Run AST queries to find matches
-    const astMatches = await runAstQueries(prioritizedFiles, dslQueries);
+    const astMatches = await runAstQueries(filteredFiles, dslQueries);
 
     // 4.5 Family/topic-aware detectors beyond generic AST (no embeddings)
     const extraCandidates: CandidateSymbol[] = [];
     if (topic === 'api') {
-      const apiExtras = await gatherApiRouteCandidates(indices.files);
+      const apiExtras = await gatherApiRouteCandidates(filteredFiles);
       extraCandidates.push(...apiExtras);
     } else if (topic === 'components') {
-      const compExtras = await gatherComponentCandidates(indices.files);
+      const compExtras = await gatherComponentCandidates(filteredFiles);
       extraCandidates.push(...compExtras);
     } else if (topic === 'db') {
-      const dbExtras = await gatherDbSchemaCandidates(indices.files);
+      const dbExtras = await gatherDbSchemaCandidates(filteredFiles);
       extraCandidates.push(...dbExtras);
     }
 
@@ -409,9 +421,24 @@ export async function localContext(req: LocalContextRequest): Promise<LocalConte
     const candidates = await rankCandidates(allMatches, indices, request.query, plan);
 
     // 6. Select top jump targets (respect maxSimilarChunks)
-    const jumpTargets = selectJumpTargets(candidates, {
+    let jumpTargets = selectJumpTargets(candidates, {
       max: Math.max(1, Math.min(request.maxSimilarChunks, 20)),
     });
+
+    if (jumpTargets.length === 0 && candidates.length > 0) {
+      const candidate = candidates[0];
+      jumpTargets = [
+        {
+          file: candidate.file,
+          symbol: candidate.symbol,
+          start: candidate.start,
+          end: candidate.end,
+          role: candidate.role || inferRoleFromSymbol(candidate.symbol),
+          confidence: candidate.score,
+          why: candidate.reasons,
+        },
+      ];
+    }
 
     // 7. Build mini-bundle with token budget
     const miniBundle = await buildMiniBundle(jumpTargets, indices.files, request.maxTokens);

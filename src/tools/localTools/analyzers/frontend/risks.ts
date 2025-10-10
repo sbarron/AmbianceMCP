@@ -12,7 +12,6 @@ import type { PerformanceAnalysis } from './performance';
 import type { AccessibilityAnalysis } from './accessibility';
 import type { EnvironmentAnalysis } from './environment';
 import type { ComponentInfo } from './components';
-import type { RouteInfo } from './router';
 import { logger } from '../../../../utils/logger';
 
 export interface RiskRule {
@@ -260,12 +259,6 @@ function evaluateRoutingRisks(
     hasInlineLoading?: boolean;
     hasInlineError?: boolean;
     hasDataFetch?: boolean;
-  }>,
-  routeHandlers: Array<{
-    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
-    path: string;
-    file: string;
-    lines?: string;
   }>
 ): RiskRule[] {
   const rules: RiskRule[] = [];
@@ -276,10 +269,6 @@ function evaluateRoutingRisks(
   const pagesWithDataFetching = routePages.filter(
     page => page.path && !page.path.startsWith('/api') && !!page.hasDataFetch
   );
-  const handlersWithDataFetching: typeof routeHandlers = [];
-
-  const totalRoutesWithDataFetching = pagesWithDataFetching.length;
-
   // Only flag if data fetching is detected AND neither route nor inline boundaries exist
   // Only flag when BOTH loading and error handling are missing
   const pagesMissingBoundaries = pagesWithDataFetching.filter(
@@ -304,10 +293,9 @@ function evaluateRoutingRisks(
 /**
  * Evaluate state management risks (STATE-001)
  */
-function evaluateStateRisks(
-  dataFlowAnalysis: { endpoints: Array<{ path: string; usedBy: string[] }> },
-  components: ComponentInfo[]
-): RiskRule[] {
+function evaluateStateRisks(dataFlowAnalysis: {
+  endpoints: Array<{ path: string; usedBy: string[] }>;
+}): RiskRule[] {
   const rules: RiskRule[] = [];
 
   // Find endpoints used by multiple components without a data library
@@ -435,13 +423,7 @@ function generateScoreReductionActions(
   perfAnalysis: PerformanceAnalysis,
   accessibilityAnalysis: AccessibilityAnalysis,
   envAnalysis: EnvironmentAnalysis,
-  routePages: Array<{ path: string; page: string; layout?: string; clientIslands: number }>,
-  routeHandlers: Array<{
-    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
-    path: string;
-    file: string;
-    lines?: string;
-  }>
+  routePages: Array<{ path: string; page: string; layout?: string; clientIslands: number }>
 ): Array<{
   action: string;
   estimatedReduction: number;
@@ -551,7 +533,9 @@ export function analyzeRisks(
     lines?: string;
   }>,
   components: ComponentInfo[],
-  dataFlowAnalysis: { endpoints: Array<{ path: string; usedBy: string[] }> }
+  dataFlowAnalysis: {
+    endpoints: Array<{ path: string; usedBy: string[] }>;
+  }
 ): RiskAnalysis {
   logger.info('🎯 Analyzing risk score and generating recommendations');
 
@@ -559,8 +543,8 @@ export function analyzeRisks(
   const envRisks = evaluateEnvironmentRisks(envAnalysis);
   const accessibilityRisks = evaluateAccessibilityRisks(accessibilityAnalysis);
   const performanceRisks = evaluatePerformanceRisks(perfAnalysis);
-  const routingRisks = evaluateRoutingRisks(perfAnalysis, routePages, routeHandlers);
-  const stateRisks = evaluateStateRisks(dataFlowAnalysis, components);
+  const routingRisks = evaluateRoutingRisks(perfAnalysis, routePages);
+  const stateRisks = evaluateStateRisks(dataFlowAnalysis);
 
   // Combine all risk rules
   const allRiskRules = [
@@ -593,8 +577,7 @@ export function analyzeRisks(
     perfAnalysis,
     accessibilityAnalysis,
     envAnalysis,
-    routePages,
-    routeHandlers
+    routePages
   );
 
   const analysis: RiskAnalysis = {

@@ -91,6 +91,25 @@ jest.mock('fs', () => ({
   readFileSync: jest.fn(),
 }));
 
+// Mock FileDiscovery to avoid touching real filesystem
+jest.mock('../../../core/compactor/fileDiscovery', () => {
+  const actual = jest.requireActual('../../../core/compactor/fileDiscovery');
+  return {
+    ...actual,
+    FileDiscovery: class MockFileDiscovery {
+      basePath: string;
+      options: any;
+      constructor(basePath: string, options: any) {
+        this.basePath = basePath;
+        this.options = options;
+      }
+      async discoverFiles() {
+        return SAMPLE_FILES;
+      }
+    },
+  };
+});
+
 const mockReadFileSync = fs.readFileSync as jest.MockedFunction<typeof fs.readFileSync>;
 
 beforeEach(() => {
@@ -214,7 +233,7 @@ describe('Enhanced Local Context - Unit Tests', () => {
 
       const mockIndices = {
         systems: {
-          db: { engine: 'SQLite' },
+          db: { engine: 'vector-chroma' },
         },
         env: ['DB_PATH'],
       };
@@ -226,7 +245,7 @@ describe('Enhanced Local Context - Unit Tests', () => {
         mockIndices
       );
 
-      expect(answer).toContain('SQLite');
+      expect(answer).toContain('vector-chroma');
       expect(answer).toContain('initializeDatabase');
       expect(answer).toContain('DB_PATH');
       expect(answer.length).toBeGreaterThan(50);
@@ -364,6 +383,23 @@ describe('Enhanced Local Context - Integration Tests', () => {
     expect(result.llmBundle).toBeDefined();
     const envHints = result.llmBundle?.envHints || [];
     expect(envHints.some(k => /SUPABASE_/i.test(k))).toBe(true);
+  });
+
+  it('should respect exclude patterns when provided', async () => {
+    const request: LocalContextRequest = {
+      projectPath: FIXTURE_PROJECT_PATH,
+      query: 'auth supabase login',
+      taskType: 'understand',
+      maxTokens: 1000,
+      useProjectHintsCache: false,
+      excludePatterns: ['**/auth/**'],
+    };
+
+    const result = await localContext(request);
+
+    expect(result.success).toBe(true);
+    const hasAuthFile = result.jumpTargets.some(target => /auth/i.test(target.file));
+    expect(hasAuthFile).toBe(false);
   });
 });
 

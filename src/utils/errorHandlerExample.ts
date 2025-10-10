@@ -6,7 +6,6 @@
 
 // Import the error handling system
 import {
-  MCPErrorHandler,
   AmbianceError,
   ValidationError,
   APIError,
@@ -15,9 +14,9 @@ import {
   withErrorHandling,
   withSyncErrorHandling,
   handleError,
-  createError,
   getUserFriendlyMessage,
 } from './errorHandler';
+import { logger } from './logger';
 
 /**
  * Example 1: Basic error handling with automatic logging
@@ -33,11 +32,11 @@ export async function exampleBasicErrorHandling() {
       { operation: 'exampleBasicErrorHandling' },
       { rethrow: false }
     );
-    console.log('Error handled:', mcpError.code, mcpError.message);
+    logger.info('Error handled', { code: mcpError.code, message: mcpError.message });
 
     // Get user-friendly message
     const userMessage = getUserFriendlyMessage(mcpError);
-    console.log('User message:', userMessage);
+    logger.info('User message', { userMessage });
   }
 }
 
@@ -50,7 +49,7 @@ export function exampleCustomErrors() {
     throw new ValidationError('email', 'Invalid email format', { value: 'invalid-email' });
   } catch (error) {
     const mcpError = handleError(error, { userId: 123 }, { rethrow: false });
-    console.log('Validation error:', mcpError.code, mcpError.message);
+    logger.warn('Validation error', { code: mcpError.code, message: mcpError.message });
   }
 
   try {
@@ -60,7 +59,7 @@ export function exampleCustomErrors() {
     });
   } catch (error) {
     const mcpError = handleError(error, { userId: 123 }, { rethrow: false });
-    console.log('API error:', mcpError.code, mcpError.message);
+    logger.warn('API error', { code: mcpError.code, message: mcpError.message });
   }
 
   try {
@@ -72,7 +71,7 @@ export function exampleCustomErrors() {
     );
   } catch (error) {
     const mcpError = handleError(error, { fileOperation: 'read' }, { rethrow: false });
-    console.log('File error:', mcpError.code, mcpError.message);
+    logger.warn('File error', { code: mcpError.code, message: mcpError.message });
   }
 }
 
@@ -99,6 +98,8 @@ export async function exampleWithWrappers() {
     },
     { operation: 'parseConfig', file: 'config.json' }
   );
+
+  return { asyncResult: result, syncResult };
 }
 
 /**
@@ -164,7 +165,7 @@ export function exampleDomainErrors() {
     throw new DatabaseError('INSERT', 'users', { userId: 123, email: 'test@example.com' });
   } catch (error) {
     const mcpError = handleError(error, { service: 'userService' }, { rethrow: false });
-    console.log('Database error:', mcpError.code, mcpError.message);
+    logger.error('Database error', { code: mcpError.code, message: mcpError.message });
   }
 }
 
@@ -207,7 +208,7 @@ export async function exampleAPIClientErrorHandling() {
 }
 
 // Placeholder function for examples
-async function someOperation(): Promise<any> {
+async function someOperation(): Promise<{ success: boolean }> {
   // Simulate an operation that might fail
   if (Math.random() > 0.5) {
     throw new Error('Random failure');

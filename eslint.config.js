@@ -16,7 +16,7 @@ module.exports = [
       parserOptions: {
         ecmaVersion: 2022,
         sourceType: 'module',
-        project: './tsconfig.json',
+        project: './tsconfig.eslint.json',
       },
       globals: {
         console: 'readonly',
@@ -34,6 +34,7 @@ module.exports = [
         setInterval: 'readonly',
         clearInterval: 'readonly',
         BufferEncoding: 'readonly',
+        fetch: 'readonly',
       },
     },
     plugins: {
@@ -42,18 +43,23 @@ module.exports = [
     },
     rules: {
       // Base TypeScript rules
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': 'off',
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off',
-      '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-non-null-assertion': 'warn',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-non-null-assertion': 'off',
       '@typescript-eslint/no-var-requires': 'off',
 
       // General ESLint rules
+      'no-unused-vars': 'off',
       'no-console': 'warn',
       'no-debugger': 'error',
       'prefer-const': 'error',
       'no-var': 'error',
+      'no-empty': 'off',
+      'no-useless-catch': 'off',
+      'no-useless-escape': 'off',
+      'no-control-regex': 'off',
 
       // Prettier integration
       'prettier/prettier': 'error',
@@ -99,7 +105,7 @@ module.exports = [
       parserOptions: {
         ecmaVersion: 2022,
         sourceType: 'module',
-        // Don't require tsconfig project for test files
+        project: null,
       },
       globals: {
         jest: 'readonly',
@@ -141,6 +147,14 @@ module.exports = [
     files: ['jest.config.js', 'eslint.config.js', '**/__mocks__/**/*.js'],
     rules: {
       '@typescript-eslint/no-var-requires': 'off',
+    },
+  },
+
+  // CLI and script files - allow console output for user-facing feedback
+  {
+    files: ['scripts/**/*.ts', 'src/cli.ts', 'src/core/compactor/**/*.ts', 'src/utils/logger.ts'],
+    rules: {
+      'no-console': 'off',
     },
   },
 

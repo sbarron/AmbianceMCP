@@ -121,10 +121,19 @@ export async function buildModuleGraph(
     for (const spec of importSpecs) {
       const resolved = resolveAlias(spec, rel, files, toPosix(projectRoot), pathsMap);
       if (!resolved) continue;
-      if (!imports.has(rel)) imports.set(rel, new Set());
-      imports.get(rel)!.add(resolved);
-      if (!reverse.has(resolved)) reverse.set(resolved, new Set());
-      reverse.get(resolved)!.add(rel);
+      let importSet = imports.get(rel);
+      if (!importSet) {
+        importSet = new Set<string>();
+        imports.set(rel, importSet);
+      }
+      importSet.add(resolved);
+
+      let reverseSet = reverse.get(resolved);
+      if (!reverseSet) {
+        reverseSet = new Set<string>();
+        reverse.set(resolved, reverseSet);
+      }
+      reverseSet.add(rel);
     }
   }
 

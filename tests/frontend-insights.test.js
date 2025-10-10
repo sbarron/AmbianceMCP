@@ -60,4 +60,34 @@ describe('Frontend Insights Tool', () => {
     expect(response.content[0].type).toBe('text');
     expect(response.content[0].text).toBeDefined();
   }, 30000);
+
+  it('should include file composition analysis in results', async () => {
+    if (!handleFrontendInsights) {
+      console.warn('Handler not available, skipping test');
+      return;
+    }
+
+    const validArgs = {
+      projectPath: path.resolve('.'),
+      format: 'json',
+      includeContent: true,
+      subtree: 'src',
+      maxFiles: 5
+    };
+
+    const response = await handleFrontendInsights(validArgs);
+    expect(response).toBeDefined();
+
+    const result = JSON.parse(response.content[0].text);
+    expect(result.summary).toBeDefined();
+    expect(result.summary.fileComposition).toBeDefined();
+    expect(result.summary.fileComposition.totalFiles).toBeGreaterThan(0);
+    expect(result.summary.fileComposition.byType).toBeDefined();
+    expect(result.summary.fileComposition.analyzedFiles).toBeGreaterThanOrEqual(0);
+    expect(result.summary.fileComposition.filteredOut).toBeDefined();
+
+    // Verify that analyzedFiles + filteredOut files = totalFiles
+    const totalFiltered = Object.values(result.summary.fileComposition.filteredOut).reduce((sum, count) => sum + count, 0);
+    expect(result.summary.fileComposition.analyzedFiles + totalFiltered).toBe(result.summary.fileComposition.totalFiles);
+  }, 30000);
 });

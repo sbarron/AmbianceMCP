@@ -104,7 +104,7 @@ describe('Phase 13 Resource Guard System', () => {
       const { id, controller } = resourceGuard.createAbortController();
 
       expect(id).toBeDefined();
-      expect(controller).toBeInstanceOf(AbortController);
+      expect(controller).toBeInstanceOf(globalThis.AbortController);
       expect(controller.signal.aborted).toBe(false);
 
       await resourceGuard.dispose(id);

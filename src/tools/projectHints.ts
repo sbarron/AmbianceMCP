@@ -31,6 +31,7 @@ import { OpenAIService, createOpenAIService, ProviderType } from '../core/openai
 import { projectHintsComposer, ProjectHintsWithEvidence } from './projectHints/composer';
 import { LocalEmbeddingStorage } from '../local/embeddingStorage';
 import { LocalEmbeddingGenerator } from '../local/embeddingGenerator';
+import { compileExcludePatterns, isExcludedPath } from './utils/toolHelpers';
 
 export interface WordFrequency {
   word: string;
@@ -96,6 +97,7 @@ export interface ProjectHintsOptions {
   useAI?: boolean;
   maxFileSizeForSymbols?: number;
   format?: 'json' | 'markdown' | 'html';
+  excludePatterns?: string[];
   includeCharts?: {
     type: 'functions' | 'classes';
     maxItems?: number;
@@ -320,15 +322,20 @@ export class ProjectHintsGenerator {
       useAI = this.useAI,
       maxFileSizeForSymbols = 50000,
       format = 'json',
+      excludePatterns = [],
     } = options;
 
     logger.info('Generating project hints', { projectPath, options });
 
-    const hints = await this.generateRawHints(projectPath, {
+    const hintsGenerator = new ProjectHintsGenerator();
+    const excludeRegexes = compileExcludePatterns(excludePatterns);
+
+    const hints = await hintsGenerator.generateRawHints(projectPath, {
       maxFiles,
       includeContent,
       useAI,
       maxFileSizeForSymbols,
+      excludePatterns,
     });
 
     // Check if we should enhance with evidence cards
@@ -363,9 +370,10 @@ export class ProjectHintsGenerator {
       includeContent: boolean;
       useAI: boolean;
       maxFileSizeForSymbols: number;
+      excludePatterns: string[];
     }
   ): Promise<ProjectHints> {
-    const { maxFiles, includeContent, useAI, maxFileSizeForSymbols } = options;
+    const { maxFiles, includeContent, useAI, maxFileSizeForSymbols, excludePatterns } = options;
 
     // Discover all files
     const fileDiscovery = new FileDiscovery(projectPath, {
@@ -374,33 +382,39 @@ export class ProjectHintsGenerator {
 
     let allFiles = await fileDiscovery.discoverFiles();
 
+    // Apply exclude patterns if provided
+    if (excludePatterns && excludePatterns.length > 0) {
+      const excludeRegexes = compileExcludePatterns(excludePatterns);
+      allFiles = allFiles.filter(file => !isExcludedPath(file.relPath, excludeRegexes));
+    }
+
     // Sort by relevance and limit
-    allFiles = fileDiscovery.sortByRelevance(allFiles).slice(0, maxFiles);
+    const limitedFiles = fileDiscovery.sortByRelevance(allFiles).slice(0, maxFiles);
 
     // Process different analyses in parallel for better performance
     const [symbolMaps, folderHints] = await Promise.all([
-      this.extractSymbols(allFiles, includeContent, maxFileSizeForSymbols),
-      this.analyzeFolderStructure(allFiles, useAI),
+      this.extractSymbols(limitedFiles, includeContent, maxFileSizeForSymbols),
+      this.analyzeFolderStructure(limitedFiles, useAI),
     ]);
 
     // Detect architecture and domain patterns
-    const architectureKeywords = this.detectArchitecturePatterns(allFiles, symbolMaps);
-    const domainKeywords = this.extractDomainKeywords(allFiles, symbolMaps);
+    const architectureKeywords = this.detectArchitecturePatterns(limitedFiles, symbolMaps);
+    const domainKeywords = this.extractDomainKeywords(limitedFiles, symbolMaps);
 
     // Get file size information
-    const totalSize = allFiles.reduce((sum: number, file: FileInfo) => sum + file.size, 0);
+    const totalSize = limitedFiles.reduce((sum: number, file: FileInfo) => sum + file.size, 0);
     const codebaseSize = this.formatFileSize(totalSize);
 
     const hints: ProjectHints = {
-      primaryLanguages: this.getPrimaryLanguages(allFiles),
+      primaryLanguages: this.getPrimaryLanguages(limitedFiles),
       architectureKeywords,
       domainKeywords,
       folderHints,
-      entryPoints: this.findEntryPoints(allFiles),
-      configFiles: this.findConfigFiles(allFiles),
-      documentationFiles: this.findDocumentationFiles(allFiles),
+      entryPoints: this.findEntryPoints(limitedFiles),
+      configFiles: this.findConfigFiles(limitedFiles),
+      documentationFiles: this.findDocumentationFiles(limitedFiles),
       symbolHints: symbolMaps,
-      totalFiles: allFiles.length,
+      totalFiles: limitedFiles.length,
       codebaseSize,
       lastAnalyzed: new Date(),
     };
@@ -1196,24 +1210,95 @@ Return JSON:
 
     // Check package.json and imports for frameworks
     const allImports = symbolMaps.imports.map((imp: WordFrequency) => imp.word.toLowerCase());
+    const normalizedImports = allImports.map(imp => imp.toLowerCase());
+    const hasImport = (...candidates: string[]) =>
+      normalizedImports.some(imp =>
+        candidates.some(candidate => imp.includes(candidate.toLowerCase()))
+      );
 
     // Web frameworks
-    if (allImports.some((imp: string) => imp.includes('express'))) patterns.add('express');
-    if (allImports.some((imp: string) => imp.includes('fastify'))) patterns.add('fastify');
-    if (allImports.some((imp: string) => imp.includes('next'))) patterns.add('nextjs');
-    if (allImports.some((imp: string) => imp.includes('react'))) patterns.add('react');
-    if (allImports.some((imp: string) => imp.includes('vue'))) patterns.add('vue');
+    if (hasImport('express')) patterns.add('express');
+    if (hasImport('fastify')) patterns.add('fastify');
+    if (hasImport('next')) patterns.add('nextjs');
+    if (hasImport('react')) patterns.add('react');
+    if (hasImport('vue')) patterns.add('vue');
 
-    // Databases
-    if (allImports.some((imp: string) => imp.includes('postgres') || imp.includes('pg')))
-      patterns.add('postgresql');
-    if (allImports.some((imp: string) => imp.includes('mongo'))) patterns.add('mongodb');
-    if (allImports.some((imp: string) => imp.includes('redis'))) patterns.add('redis');
-    if (allImports.some((imp: string) => imp.includes('supabase'))) patterns.add('supabase');
+    // ORMs & query builders
+    if (
+      hasImport('prisma', 'schema.prisma') ||
+      files.some(f => f.relPath.toLowerCase().includes('schema.prisma'))
+    )
+      patterns.add('prisma');
+    if (hasImport('drizzle-orm', 'drizzle')) patterns.add('drizzle');
+    if (hasImport('typeorm')) patterns.add('typeorm');
+    if (hasImport('sequelize')) patterns.add('sequelize');
+    if (hasImport('knex')) patterns.add('knex');
+    if (hasImport('kysely')) patterns.add('kysely');
+    if (hasImport('objection')) patterns.add('objection');
+    if (
+      patterns.has('prisma') ||
+      patterns.has('drizzle') ||
+      patterns.has('typeorm') ||
+      patterns.has('sequelize') ||
+      patterns.has('knex') ||
+      patterns.has('kysely') ||
+      patterns.has('objection')
+    ) {
+      patterns.add('orm');
+    }
+
+    // Databases & storage engines
+    if (hasImport('postgres', 'pg', 'supabase-js')) patterns.add('postgresql');
+    if (hasImport('mongo', 'mongoose')) patterns.add('mongodb');
+    if (hasImport('redis', 'ioredis', 'redis-om')) patterns.add('redis');
+    if (hasImport('supabase')) patterns.add('supabase');
+    if (hasImport('dynamodb', 'lib-dynamodb', '@aws-sdk/lib-dynamodb')) patterns.add('dynamodb');
+    if (hasImport('firestore', '@google-cloud/firestore', 'firebase')) patterns.add('firestore');
+    if (hasImport('fauna')) patterns.add('faunadb');
+    if (hasImport('planetscale')) patterns.add('planetscale');
+    if (hasImport('cassandra')) patterns.add('cassandra');
+    if (hasImport('couchdb', 'pouchdb')) patterns.add('couchdb');
+
+    // Graph & vector databases
+    if (hasImport('neo4j', 'gremlin')) patterns.add('graph-db');
+    if (hasImport('arangodb')) patterns.add('arangodb');
+    if (hasImport('dgraph')) patterns.add('dgraph');
+    if (
+      hasImport(
+        'pinecone',
+        'weaviate',
+        'qdrant',
+        'chromadb',
+        'chroma',
+        'milvus',
+        'meilisearch',
+        'typesense',
+        'faiss'
+      )
+    ) {
+      patterns.add('vector-db');
+    }
+    if (hasImport('pinecone')) patterns.add('pinecone');
+    if (hasImport('weaviate')) patterns.add('weaviate');
+    if (hasImport('qdrant', 'js-client-rest')) patterns.add('qdrant');
+    if (hasImport('chromadb', 'chroma')) patterns.add('chroma');
+    if (hasImport('milvus')) patterns.add('milvus');
+    if (hasImport('meilisearch')) patterns.add('meilisearch');
+    if (hasImport('typesense')) patterns.add('typesense');
+
+    // Offline/local storage
+    if (hasImport('localforage', 'localforage')) patterns.add('localforage');
+    if (hasImport('dexie')) patterns.add('indexeddb');
+    if (hasImport('idb')) patterns.add('indexeddb');
+    if (hasImport('asyncstorage', '@react-native-async-storage')) patterns.add('async-storage');
+    if (hasImport('expo-secure-store', 'securestore')) patterns.add('secure-store');
+    if (hasImport('realm')) patterns.add('realm');
+    if (hasImport('nedb')) patterns.add('nedb');
+    if (hasImport('lowdb')) patterns.add('lowdb');
 
     // Other patterns
-    if (allImports.some((imp: string) => imp.includes('docker'))) patterns.add('docker');
-    if (allImports.some((imp: string) => imp.includes('openai'))) patterns.add('openai');
+    if (hasImport('docker')) patterns.add('docker');
+    if (hasImport('openai')) patterns.add('openai');
     if (files.some(f => f.relPath.includes('package.json'))) patterns.add('nodejs');
     if (files.some(f => f.relPath.includes('requirements.txt'))) patterns.add('python');
     if (files.some(f => f.relPath.includes('go.mod'))) patterns.add('golang');

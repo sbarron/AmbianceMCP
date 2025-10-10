@@ -54,6 +54,40 @@ function formatStructuredFrontendInsights(data: FrontendInsights): string {
   output += `Data Libraries: ${data.summary.dataLibraries.join(', ') || 'None detected'}\n`;
   output += `Design System: ${data.summary.designSystem.join(', ') || 'None detected'}\n\n`;
 
+  // File Composition
+  if (data.summary.fileComposition) {
+    output += `📁 FILE COMPOSITION\n`;
+    output += `Total Files: ${data.summary.fileComposition.totalFiles}\n`;
+    output += `Analyzed Files: ${data.summary.fileComposition.analyzedFiles}\n`;
+
+    // Sort file types by count (descending)
+    const sortedTypes = Object.entries(data.summary.fileComposition.byType)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10); // Show top 10
+
+    if (sortedTypes.length > 0) {
+      output += `Top File Types: ${sortedTypes.map(([ext, count]) => `${ext}: ${count}`).join(', ')}\n`;
+    }
+
+    // Show filtered out files if any
+    const filteredTypes = Object.entries(data.summary.fileComposition.filteredOut)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5);
+
+    if (filteredTypes.length > 0) {
+      const filteredCount = Object.values(data.summary.fileComposition.filteredOut).reduce(
+        (sum, count) => sum + count,
+        0
+      );
+      output += `Filtered Out: ${filteredCount} files (${filteredTypes.map(([ext, count]) => `${ext}: ${count}`).join(', ')}`;
+      if (Object.keys(data.summary.fileComposition.filteredOut).length > 5) {
+        output += ', ...';
+      }
+      output += ')\n';
+    }
+    output += '\n';
+  }
+
   // Routes
   const totalRoutes = data.routes.pages.length + data.routes.handlers.length;
   if (totalRoutes > 0) {

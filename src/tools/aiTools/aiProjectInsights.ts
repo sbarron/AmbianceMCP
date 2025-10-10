@@ -18,6 +18,7 @@ import { logger } from '../../utils/logger';
 import { getOpenAIService } from './aiSemanticCompact';
 import { createInsightsSystemPrompt, createInsightsUserPrompt } from './prompts/insightsPrompts';
 import { buildApiRequest } from './utils/tokenUtils';
+import { compileExcludePatterns, isExcludedPath } from '../utils/toolHelpers';
 
 export const aiProjectInsightsTool = {
   name: 'ai_project_insights',
@@ -71,6 +72,12 @@ Accepts absolute paths or relative paths (when workspace can be detected).
         default: 'structured',
         description: 'Format for the analysis output',
       },
+      excludePatterns: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Additional patterns to exclude from analysis (e.g., ["*.md", "docs/**", "*.test.js"])',
+      },
     },
   },
 };
@@ -86,6 +93,7 @@ export async function handleAIProjectInsights(args: any): Promise<any> {
       includeRecommendations = true,
       focusAreas = [],
       outputFormat = 'structured',
+      excludePatterns = [],
     } = args;
 
     // Validate that projectPath is provided and is absolute
@@ -105,16 +113,85 @@ export async function handleAIProjectInsights(args: any): Promise<any> {
 
     const openai = getOpenAIService();
 
+    // Handle exclude patterns by creating a temporary directory if needed
+    let analysisPath = validatedProjectPath;
+    let cleanupTempDir: (() => Promise<void>) | null = null;
+
+    const excludeRegexes = compileExcludePatterns(excludePatterns);
+
+    if (excludeRegexes.length > 0) {
+      const fs = require('fs').promises;
+      const path = require('path');
+      const os = require('os');
+      const { FileDiscovery } = await import('../../core/compactor/fileDiscovery.js');
+
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-insights-'));
+      logger.info('📁 Creating temporary directory for AI insights exclude pattern filtering', {
+        tempDir,
+      });
+
+      try {
+        const fileDiscovery = new FileDiscovery(validatedProjectPath, {
+          maxFileSize: 200000,
+        });
+
+        let allFiles = await fileDiscovery.discoverFiles();
+
+        allFiles = allFiles.filter(file => !isExcludedPath(file.relPath, excludeRegexes));
+
+        logger.info('📊 Applied exclude patterns to AI insights', {
+          filteredCount: allFiles.length,
+          excludePatterns,
+        });
+
+        // Copy filtered files to temp directory
+        for (const file of allFiles) {
+          const sourcePath = file.absPath;
+          const relativePath = path.relative(validatedProjectPath, sourcePath);
+          const destPath = path.join(tempDir, relativePath);
+
+          await fs.mkdir(path.dirname(destPath), { recursive: true });
+          await fs.copyFile(sourcePath, destPath);
+        }
+
+        analysisPath = tempDir;
+        cleanupTempDir = async () => {
+          try {
+            await fs.rm(tempDir, { recursive: true, force: true });
+            logger.debug('🧹 Cleaned up AI insights temporary directory', { tempDir });
+          } catch (error) {
+            logger.warn('Failed to cleanup AI insights temporary directory', { tempDir, error });
+          }
+        };
+      } catch (error) {
+        // Clean up temp directory on error
+        try {
+          await fs.rm(tempDir, { recursive: true, force: true });
+        } catch {}
+        throw error;
+      }
+    }
+
     // Get comprehensive project analysis
     const [compactedProject, projectHints] = await Promise.all([
-      new SemanticCompactor(validatedProjectPath).compact(),
-      new ProjectHintsGenerator().generateProjectHints(validatedProjectPath, {
+      new SemanticCompactor(analysisPath).compact(),
+      new ProjectHintsGenerator().generateProjectHints(analysisPath, {
         format: 'json',
         maxFiles: 50,
         includeContent: true,
         useAI: false, // We'll do our own AI analysis
+        excludePatterns,
       }),
     ]);
+
+    // Clean up temporary directory if created
+    if (cleanupTempDir) {
+      try {
+        await cleanupTempDir();
+      } catch (cleanupError) {
+        logger.warn('Failed to cleanup AI insights temporary directory', { error: cleanupError });
+      }
+    }
 
     // Build comprehensive context
     const analysisContext = {

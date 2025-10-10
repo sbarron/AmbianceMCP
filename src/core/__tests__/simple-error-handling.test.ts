@@ -98,28 +98,34 @@ describe('Core Validation Error Handling', () => {
 
   describe('Error Message Structure', () => {
     test('should provide structured error information', () => {
+      let caughtError: unknown;
+
       try {
         ValidationHelper.validateInput(ReadFileInputSchema, { fileId: 'invalid' }, 'readFile');
-        fail('Expected ValidationError to be thrown');
       } catch (error) {
-        expect(error).toBeInstanceOf(ValidationError);
-        const validationError = error as ValidationError;
-        expect(validationError.structured).toBeDefined();
-        expect(validationError.structured.code).toBeDefined();
-        expect(validationError.structured.context).toBeDefined();
+        caughtError = error;
       }
+
+      expect(caughtError).toBeInstanceOf(ValidationError);
+      const validationError = caughtError as ValidationError;
+      expect(validationError.structured).toBeDefined();
+      expect(validationError.structured.code).toBeDefined();
+      expect(validationError.structured.context).toBeDefined();
     });
 
     test('should include helpful suggestions in error messages', () => {
+      let caughtError: unknown;
+
       try {
         const stringSchema = z.string().min(10, 'String too short');
         ValidationHelper.validateInput(stringSchema, 'short', 'test');
-        fail('Expected ValidationError to be thrown');
       } catch (error) {
-        expect(error).toBeInstanceOf(ValidationError);
-        const validationError = error as ValidationError;
-        expect(validationError.message).toContain('String too short');
+        caughtError = error;
       }
+
+      expect(caughtError).toBeInstanceOf(ValidationError);
+      const validationError = caughtError as ValidationError;
+      expect(validationError.message).toContain('String too short');
     });
   });
 
@@ -200,11 +206,9 @@ describe('Core Validation Error Handling', () => {
 
   describe('Custom Validation Rules', () => {
     test('should handle custom refinement failures', () => {
-      const customSchema = z
-        .string()
-        .refine(val => val.includes('required-text'), {
-          message: 'String must contain required-text',
-        });
+      const customSchema = z.string().refine(val => val.includes('required-text'), {
+        message: 'String must contain required-text',
+      });
 
       expect(() => {
         ValidationHelper.validateInput(customSchema, 'missing text', 'custom');

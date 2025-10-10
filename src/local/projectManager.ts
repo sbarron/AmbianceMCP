@@ -16,6 +16,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { logger } from '../utils/logger';
+
 export interface LocalProject {
   id: string;
   name: string;
@@ -63,7 +65,7 @@ export class LocalProjectManager {
         }
       }
     } catch (error) {
-      console.error('Failed to load local projects:', error);
+      logger.error('Failed to load local projects', { error });
     }
   }
 
@@ -72,7 +74,7 @@ export class LocalProjectManager {
       const projectsArray = Array.from(this.projects.values());
       fs.writeFileSync(this.projectsFile, JSON.stringify(projectsArray, null, 2));
     } catch (error) {
-      console.error('Failed to save local projects:', error);
+      logger.error('Failed to save local projects', { error });
     }
   }
 

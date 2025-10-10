@@ -138,62 +138,12 @@ async function extractImports(filePath: string): Promise<string[]> {
 
     return [...new Set(imports)]; // Remove duplicates
   } catch (error) {
+    logger.debug('Failed to extract imports from file', {
+      filePath,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return [];
   }
-}
-
-/**
- * Build import graph for a component and its dependencies
- */
-async function buildImportGraph(
-  componentFile: string,
-  allFiles: FileInfo[],
-  processedFiles: Set<string> = new Set()
-): Promise<Set<string>> {
-  const allImports = new Set<string>();
-
-  if (processedFiles.has(componentFile)) {
-    return allImports;
-  }
-
-  processedFiles.add(componentFile);
-
-  const fileInfo = allFiles.find(
-    f => f.relPath.replace(/\\/g, '/') === componentFile.replace(/\\/g, '/')
-  );
-  if (!fileInfo) return allImports;
-
-  const directImports = await extractImports(fileInfo.absPath);
-  allImports.add(componentFile);
-
-  // Recursively process imports (only follow local imports)
-  for (const importPath of directImports) {
-    if (importPath.startsWith('./') || importPath.startsWith('../')) {
-      // Resolve relative import
-      const baseDir = path.posix.dirname(componentFile.replace(/\\/g, '/'));
-      const resolvedPosix = path.posix.normalize(path.posix.join(baseDir, importPath));
-      const normalizedPath = resolvedPosix;
-
-      // Find matching file
-      const importedFile = allFiles.find(f => {
-        const rel = f.relPath.replace(/\\/g, '/');
-        return (
-          rel === normalizedPath + '.ts' ||
-          rel === normalizedPath + '.tsx' ||
-          rel === normalizedPath + '.js' ||
-          rel === normalizedPath + '.jsx' ||
-          rel === normalizedPath
-        );
-      });
-
-      if (importedFile) {
-        const subImports = await buildImportGraph(importedFile.relPath, allFiles, processedFiles);
-        subImports.forEach(imp => allImports.add(imp));
-      }
-    }
-  }
-
-  return allImports;
 }
 
 /**
@@ -223,8 +173,12 @@ async function buildPerRouteAnalysis(
       .filter(Boolean)
       .filter(seg => !/^\(.*\)$/.test(seg) && !seg.startsWith('@'));
     const route = '/' + segments.join('/');
-    if (!routeGroups.has(route)) routeGroups.set(route, []);
-    routeGroups.get(route)!.push(file);
+    const existingGroup = routeGroups.get(route);
+    if (existingGroup) {
+      existingGroup.push(file);
+    } else {
+      routeGroups.set(route, [file]);
+    }
   }
 
   // Build shared module graph for accurate traversal
@@ -239,7 +193,12 @@ async function buildPerRouteAnalysis(
       if (content.includes("'use client'") || content.includes('"use client"')) {
         hasUseClient.add(file.relPath.replace(/\\/g, '/'));
       }
-    } catch {}
+    } catch (error) {
+      logger.debug('Failed to inspect file for client directive during performance analysis', {
+        file: toPosixPath(file.relPath),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   const clientSet = new Set<string>([
     ...hasUseClient,
@@ -280,7 +239,10 @@ async function buildPerRouteAnalysis(
       const queue: string[] = [pageFile.relPath];
       const visited = new Set<string>();
       while (queue.length) {
-        const current = queue.shift()!;
+        const current = queue.shift();
+        if (!current) {
+          continue;
+        }
         const relPath = toPosixPath(current);
         if (visited.has(relPath)) continue;
         visited.add(relPath);
@@ -288,9 +250,7 @@ async function buildPerRouteAnalysis(
         if (!f) continue;
         const fRel = f.relPath.replace(/\\/g, '/');
         const isClientComponent = clientSet.has(fRel);
-        const hasUseClient = false; // classification already encodes directive
-
-        if (isClientComponent || hasUseClient) {
+        if (isClientComponent) {
           if (!routePerf.clientComponents.includes(fRel)) routePerf.clientComponents.push(fRel);
         } else {
           if (!routePerf.serverComponents.includes(fRel)) routePerf.serverComponents.push(fRel);
@@ -302,15 +262,17 @@ async function buildPerRouteAnalysis(
 
         for (const importPath of impList) {
           for (const [depName, weight] of dependencyWeights) {
-            if (importPath === depName || importPath.startsWith(depName + '/')) {
-              if (!depUsage.has(depName)) {
-                depUsage.set(depName, {
+            if (importPath === depName || importPath.startsWith(`${depName}/`)) {
+              let usageEntry = depUsage.get(depName);
+              if (!usageEntry) {
+                usageEntry = {
                   sizeKB: weight.sizeKB,
                   category: weight.category,
-                  usedIn: new Set(),
-                });
+                  usedIn: new Set<string>(),
+                };
+                depUsage.set(depName, usageEntry);
               }
-              depUsage.get(depName)!.usedIn.add(fRel);
+              usageEntry.usedIn.add(fRel);
               break;
             }
           }
@@ -331,7 +293,7 @@ async function buildPerRouteAnalysis(
     let totalSize = 0;
     let clientSize = 0;
 
-    for (const [depName, usage] of depUsage) {
+    for (const usage of depUsage.values()) {
       totalSize += usage.sizeKB;
 
       // Check if used in client components
@@ -510,7 +472,10 @@ async function detectHeavyImports(
         }
       }
     } catch (error) {
-      // Continue with next file
+      logger.debug('Failed to analyze heavy imports for file', {
+        file: toPosixPath(file.relPath),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -558,36 +523,36 @@ function getLibrarySizeHint(library: string): string {
 /**
  * Detect images not using Next.js Image component
  */
-function detectImagesWithoutNextImage(
+async function detectImagesWithoutNextImage(
   files: FileInfo[]
-): Array<{ file: string; line: number; element: string }> {
+): Promise<Array<{ file: string; line: number; element: string }>> {
   const issues: Array<{ file: string; line: number; element: string }> = [];
 
   for (const file of files) {
     if (!file.relPath.endsWith('.tsx') && !file.relPath.endsWith('.jsx')) continue;
 
     try {
-      const content = readFile(file.absPath, 'utf-8').then(content => {
-        const lines = content.split('\n');
+      const content = await readFile(file.absPath, 'utf-8');
+      const lines = content.split('\n');
 
-        lines.forEach((line, index) => {
-          // Check for <img> tags (excluding Next.js <Image>)
-          const imgRegex = /<img\s+[^>]*>/g;
-          let match;
-          while ((match = imgRegex.exec(line)) !== null) {
-            // Make sure it's not a Next.js Image component
-            if (!line.includes('<Image') && !line.includes('next/image')) {
-              issues.push({
-                file: toPosixPath(file.relPath),
-                line: index + 1,
-                element: match[0],
-              });
-            }
+      lines.forEach((line, index) => {
+        const imgRegex = /<img\s+[^>]*>/g;
+        let match;
+        while ((match = imgRegex.exec(line)) !== null) {
+          if (!line.includes('<Image') && !line.includes('next/image')) {
+            issues.push({
+              file: toPosixPath(file.relPath),
+              line: index + 1,
+              element: match[0],
+            });
           }
-        });
+        }
       });
     } catch (error) {
-      // Continue with next file
+      logger.debug('Failed to analyze image usage for file', {
+        file: toPosixPath(file.relPath),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -597,7 +562,7 @@ function detectImagesWithoutNextImage(
 /**
  * Detect routes missing suspense boundaries
  */
-function detectMissingSuspenseBoundaries(files: FileInfo[]): string[] {
+async function detectMissingSuspenseBoundaries(files: FileInfo[]): Promise<string[]> {
   const routeDirs: Set<string> = new Set();
   const routesWithDataFetching: Set<string> = new Set();
   const routesWithBoundaries: Set<string> = new Set();
@@ -616,20 +581,21 @@ function detectMissingSuspenseBoundaries(files: FileInfo[]): string[] {
     if (!file.relPath.endsWith('.tsx') && !file.relPath.endsWith('.jsx')) continue;
 
     try {
-      const content = readFile(file.absPath, 'utf-8').then(content => {
-        const routeDir = path.dirname(file.relPath);
+      const content = await readFile(file.absPath, 'utf-8');
+      const routeDir = path.dirname(file.relPath);
 
-        if (routeDirs.has(routeDir)) {
-          // Check for data fetching patterns
-          const hasDataFetching = /useQuery|useSWR|fetch\(|axios\./.test(content);
+      if (routeDirs.has(routeDir)) {
+        const hasDataFetching = /useQuery|useSWR|fetch\(|axios\./.test(content);
 
-          if (hasDataFetching) {
-            routesWithDataFetching.add(routeDir);
-          }
+        if (hasDataFetching) {
+          routesWithDataFetching.add(routeDir);
         }
-      });
+      }
     } catch (error) {
-      // Continue with next file
+      logger.debug('Failed to inspect suspense boundaries for route file', {
+        file: toPosixPath(file.relPath),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -691,7 +657,10 @@ export async function analyzePerformance(
         }
       }
     } catch (error) {
-      // Continue with next file
+      logger.debug('Failed to determine dynamic import usage for file', {
+        file,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

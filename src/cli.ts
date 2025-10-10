@@ -87,6 +87,28 @@ if (!process.env.USE_LOCAL_EMBEDDINGS) {
   console.log('🔧 Auto-enabled USE_LOCAL_EMBEDDINGS=true for embedding functionality');
 }
 
+type OptionValue = string | number | boolean | string[] | undefined;
+
+interface GlobalOptions {
+  projectPath?: string;
+  format?: string;
+  output?: string;
+  excludePatterns?: string[];
+  help?: boolean;
+  verbose?: boolean;
+  expanded?: boolean;
+  [key: string]: OptionValue;
+}
+
+type ToolArgMap = Record<string, OptionValue>;
+
+interface ToolResultObject {
+  success?: boolean;
+  content?: string;
+  summary?: string;
+  [key: string]: unknown;
+}
+
 interface EnvVarSpec {
   name: string;
   defaultValue: string;
@@ -358,12 +380,26 @@ const isServer = args.includes('--server') || args.includes('-s');
 const isMcpServerMode = isServer || (args.length === 0 && !process.stdout.isTTY);
 
 // Tool commands
-const commands = ['context', 'hints', 'summary', 'frontend', 'debug', 'grep', 'embeddings'];
+const commands = [
+  'context',
+  'hints',
+  'summary',
+  'frontend',
+  'debug',
+  'grep',
+  'embeddings',
+  'ambiance_auto_detect_index',
+  'ambiance_index_project',
+  'ambiance_reset_indexes',
+  'ambiance_start_watching',
+  'ambiance_stop_watching',
+  'ambiance_get_indexing_status',
+];
 const isToolCommand = args.length > 0 && commands.includes(args[0]);
 
 // Parse global options
-function parseGlobalOptions(args: string[]) {
-  const options: { [key: string]: string | boolean } = {};
+function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining: string[] } {
+  const options: GlobalOptions = {};
   const remaining: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -375,10 +411,18 @@ function parseGlobalOptions(args: string[]) {
         options.format = args[++i];
       } else if (arg === '--output' && i + 1 < args.length) {
         options.output = args[++i];
+      } else if (arg === '--exclude-patterns' && i + 1 < args.length) {
+        options.excludePatterns = args[++i]
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0);
       } else if (arg === '--help' || arg === '-h') {
         options.help = true;
       } else if (arg === '--verbose' || arg === '-v') {
         options.verbose = true;
+      } else {
+        // Unrecognized arguments starting with -- should go to remaining for tool-specific parsing
+        remaining.push(arg);
       }
     } else if (!arg.startsWith('-')) {
       remaining.push(arg);
@@ -399,13 +443,20 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log('======================');
   console.log('');
   console.log('Intelligent code context and analysis for modern IDEs');
+  console.log('Use as an MCP tool in your IDE or directly from the command line');
   console.log('');
   console.log('📖 Documentation & Setup:');
   console.log('  https://github.com/sbarron/AmbianceMCP');
   console.log('');
   console.log('🚀 Quick Start:');
   console.log('  1. Install: npm install -g @jackjackstudios/ambiance-mcp');
-  console.log('  2. Add to your MCP configuration (Cursor/Claude/other IDEs):');
+  console.log(
+    '  2. Create Embeddings (Recommended): Navigate to your project and generate local embeddings'
+  );
+  console.log('     cd /path/to/your/project');
+  console.log('     ambiance-mcp embeddings create');
+  console.log('     (Enables semantic search and improves context analysis. Takes 2-10 minutes)');
+  console.log('  3. Add to your MCP configuration (Cursor/Claude/other IDEs):');
   console.log('');
   console.log('     Windows:');
   console.log('     "ambiance": {');
@@ -493,8 +544,22 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log('  debug               Debug context analysis from error logs');
   console.log('  grep                AST-based structural code search');
   console.log(
-    '  embeddings          Embedding management and workspace configuration (status, create)'
+    '  embeddings          Embedding management and workspace configuration (status, create, update, recent_files, check_stale, find_duplicates, cleanup_duplicates)'
   );
+  console.log(
+    '                      find_duplicates: Find files with multiple embedding generations (stale data)'
+  );
+  console.log(
+    '                      cleanup_duplicates: Remove old embedding generations, keep only latest'
+  );
+  console.log('');
+  console.log('Indexing Tools (CLI-only):');
+  console.log('  ambiance_auto_detect_index    Auto-detect and index current project');
+  console.log('  ambiance_index_project        Index a specific project path');
+  console.log('  ambiance_reset_indexes        Reset/delete project indexes');
+  console.log('  ambiance_start_watching       Start file watching for changes');
+  console.log('  ambiance_stop_watching        Stop file watching');
+  console.log('  ambiance_get_indexing_status  Get indexing session status');
   console.log('');
   console.log('Global Options:');
   console.log('  --project-path <path>  Project directory path');
@@ -502,12 +567,98 @@ function showHelp(options: { expanded?: boolean } = {}): void {
   console.log('  --output <file>        Write output to file');
   console.log('  --verbose, -v          Enable verbose output');
   console.log('');
+  console.log('Tool-Specific Options:');
+  console.log('  context:');
+  console.log('    --query <text>       Query for semantic analysis');
+  console.log('    --task-type <type>   Analysis type (understand, debug, trace, spec, test)');
+  console.log('    --max-tokens <num>   Maximum tokens in output (default: 3000)');
+  console.log('    --max-similar-chunks <num>  Max similar code chunks to include (default: 20)');
+  console.log('    --exclude-patterns <patterns>  Patterns to exclude (e.g., "*.md,docs/**")');
+  console.log('');
+  console.log('  hints:');
+  console.log('    --max-files <num>    Maximum files to analyze (default: 100)');
+  console.log('    --folder-path <path> Specific folder to analyze');
+  console.log('    --include-content    Include detailed file content analysis');
+  console.log('    --use-ai             Enable AI-powered insights (requires OPENAI_API_KEY)');
+  console.log('    --exclude-patterns <patterns>  Patterns to exclude (e.g., "*.test.js,docs/**")');
+  console.log('');
+  console.log('  summary:');
+  console.log('    --include-symbols    Include detailed symbol information');
+  console.log('    --max-symbols <num>  Maximum symbols to return (default: 20)');
+  console.log('');
+  console.log('  frontend:');
+  console.log('    --include-content    Include detailed file content analysis');
+  console.log('    --subtree <path>     Frontend directory to analyze (default: web/app)');
+  console.log('    --max-files <num>    Maximum files to analyze (default: 2000)');
+  console.log('');
+  console.log('  debug:');
+  console.log('    --max-matches <num>  Maximum matches to return (default: 20)');
+  console.log('');
+  console.log('  grep:');
+  console.log('    --language <lang>    Programming language (auto-detected if not provided)');
+  console.log('    --output-mode <mode> Output mode (content, files_with_matches, count)');
+  console.log('');
+  console.log('  embeddings:');
+  console.log('    --auto-generate      Auto-generate embeddings after workspace setup');
+  console.log('    --auto-fix           Automatically attempt repairs during operations');
+  console.log('    --batch-size <num>   Files to process per batch (default: 10)');
+  console.log('    --files <files>      Specific files to update (for update action)');
+  console.log(
+    '    --limit <num>        Maximum files to return (for recent_files action, default: 20)'
+  );
+  console.log('    --auto-update        Automatically update stale files (for check_stale action)');
+  console.log('');
   console.log('Examples:');
-  console.log('  ambiance-mcp context --query "How does auth work?"');
-  console.log('  ambiance-mcp hints --format json --project-path /path/to/project');
-  console.log('  ambiance-mcp summary src/index.ts --include-symbols true');
-  console.log('  ambiance-mcp grep "function $NAME($ARGS)" --language typescript');
-  console.log('  ambiance-mcp embeddings create --project-path /my/workspace');
+  console.log('  # Semantic code compaction with custom options');
+  console.log(
+    '  ambiance-mcp context --query "How does authentication work?" --max-tokens 2000 --task-type understand'
+  );
+  console.log('');
+  console.log('  # Project analysis with JSON output and AI insights');
+  console.log(
+    '  ambiance-mcp hints --format json --project-path /path/to/project --use-ai true --max-files 1000'
+  );
+  console.log('');
+  console.log('  # File analysis with symbols and structured output');
+  console.log(
+    '  ambiance-mcp summary src/index.ts --include-symbols true --max-symbols 50 --format structured'
+  );
+  console.log('');
+  console.log('  # Frontend pattern analysis for specific directory');
+  console.log(
+    '  ambiance-mcp frontend --include-content true --subtree src/components --max-files 500'
+  );
+  console.log('');
+  console.log('  # Debug context analysis from error logs');
+  console.log(
+    '  ambiance-mcp debug "TypeError: Cannot read property \'map\' of undefined" --max-matches 10'
+  );
+  console.log('');
+  console.log('  # AST-based structural code search');
+  console.log(
+    '  ambiance-mcp grep "function $NAME($ARGS)" --language typescript --output-mode content'
+  );
+  console.log('');
+  console.log('  # Embedding management and status monitoring');
+  console.log('  ambiance-mcp embeddings status --project-path /my/workspace');
+  console.log('  ambiance-mcp embeddings create --project-path /my/workspace --auto-fix true');
+  console.log(
+    '  ambiance-mcp embeddings update --project-path /my/workspace --files "src/index.ts"'
+  );
+  console.log('  ambiance-mcp embeddings recent_files --project-path /my/workspace --limit 10');
+  console.log(
+    '  ambiance-mcp embeddings check_stale --project-path /my/workspace --auto-update true'
+  );
+  console.log('  ambiance-mcp embeddings find_duplicates --project-path /my/workspace');
+  console.log('  ambiance-mcp embeddings cleanup_duplicates --project-path /my/workspace');
+  console.log('');
+  console.log('  # Manual project indexing (CLI-only tools)');
+  console.log('  ambiance-mcp ambiance_start_watching --path /my/project');
+  console.log('  ambiance-mcp ambiance_auto_detect_index');
+  console.log('  ambiance-mcp ambiance_get_indexing_status');
+  console.log('');
+  console.log('  # Save output to file with verbose logging');
+  console.log('  ambiance-mcp hints --format json --output project-analysis.json --verbose');
   console.log('');
   console.log('For detailed setup instructions, visit:');
   console.log('https://github.com/sbarron/AmbianceMCP#readme');
@@ -572,10 +723,10 @@ async function startServer(): Promise<void> {
 async function executeToolCommand(
   command: string,
   toolArgs: string[],
-  globalOptions: any
+  globalOptions: GlobalOptions
 ): Promise<void> {
   try {
-    let result: any;
+    let result: unknown;
 
     switch (command) {
       case 'context':
@@ -588,6 +739,7 @@ async function executeToolCommand(
             'taskType',
             'maxTokens',
             'maxSimilarChunks',
+            'excludePatterns',
           ]),
         });
         break;
@@ -596,11 +748,17 @@ async function executeToolCommand(
         result = await handleProjectHints({
           projectPath: globalOptions.projectPath || detectProjectPath(),
           format: globalOptions.format || 'compact',
-          ...parseToolSpecificArgs(toolArgs, ['maxFiles', 'folderPath', 'includeContent', 'useAI']),
+          ...parseToolSpecificArgs(toolArgs, [
+            'maxFiles',
+            'folderPath',
+            'includeContent',
+            'useAI',
+            'excludePatterns',
+          ]),
         });
         break;
 
-      case 'summary':
+      case 'summary': {
         const filePath = toolArgs.find(arg => !arg.startsWith('--'));
         if (!filePath) {
           console.error('Error: filePath is required for summary command');
@@ -612,6 +770,7 @@ async function executeToolCommand(
           ...parseToolSpecificArgs(toolArgs, ['includeSymbols', 'maxSymbols']),
         });
         break;
+      }
 
       case 'frontend':
         result = await handleFrontendInsights({
@@ -621,7 +780,7 @@ async function executeToolCommand(
         });
         break;
 
-      case 'debug':
+      case 'debug': {
         const logText = toolArgs.find(arg => !arg.startsWith('--'));
         if (!logText) {
           console.error('Error: logText is required for debug command');
@@ -634,8 +793,9 @@ async function executeToolCommand(
           ...parseToolSpecificArgs(toolArgs, ['maxMatches']),
         });
         break;
+      }
 
-      case 'grep':
+      case 'grep': {
         const pattern = toolArgs.find(arg => !arg.startsWith('--'));
         if (!pattern) {
           console.error('Error: pattern is required for grep command');
@@ -647,9 +807,24 @@ async function executeToolCommand(
           ...parseToolSpecificArgs(toolArgs, ['language', 'outputMode']),
         });
         break;
+      }
 
-      case 'embeddings':
+      case 'embeddings': {
         const action = toolArgs.find(arg => !arg.startsWith('--')) || 'status';
+        let projectIdentifier: string | undefined;
+
+        // Extract projectIdentifier for actions that need it as a positional argument
+        if (action === 'project_details' || action === 'delete_project') {
+          const actionIndex = toolArgs.indexOf(action);
+          if (
+            actionIndex !== -1 &&
+            actionIndex + 1 < toolArgs.length &&
+            !toolArgs[actionIndex + 1].startsWith('--')
+          ) {
+            projectIdentifier = toolArgs[actionIndex + 1];
+            toolArgs.splice(actionIndex + 1, 1); // Remove the positional argument from toolArgs
+          }
+        }
 
         // Special handling for create action - require confirmation
         if (action === 'create') {
@@ -662,8 +837,6 @@ async function executeToolCommand(
           let fileCount = 'unknown';
           let estimatedTime = '2-10 minutes';
           try {
-            const fs = require('fs');
-            const path = require('path');
             const { globby } = await import('globby');
 
             const files = await globby(
@@ -679,7 +852,7 @@ async function executeToolCommand(
 
             fileCount = files.length.toString();
             estimatedTime = estimateEmbeddingTime(files.length);
-          } catch (error) {
+          } catch {
             // Use default estimate if file counting fails
             estimatedTime = '2-10 minutes';
           }
@@ -724,12 +897,105 @@ async function executeToolCommand(
           );
         }
 
+        const parsedArgs = parseToolSpecificArgs(toolArgs, [
+          'autoGenerate',
+          'autoFix',
+          'batchSize',
+          'projectIdentifier',
+          'excludePatterns',
+          'maxFiles',
+          'allowHiddenFolders',
+          'confirmDeletion',
+          'includeStats',
+          'checkIntegrity',
+          'force',
+          'maxFixTime',
+          'format',
+          'files',
+          'limit',
+          'autoUpdate',
+        ]);
+
+        // Merge global options if not already parsed
+        const mergedArgs: ToolArgMap = { ...parsedArgs };
+        if (
+          mergedArgs.excludePatterns === undefined &&
+          globalOptions.excludePatterns !== undefined
+        ) {
+          mergedArgs.excludePatterns = globalOptions.excludePatterns;
+        }
+
+        // Special handling for check_stale - show project path and confirm if autoUpdate
+        if (action === 'check_stale') {
+          const projectPath = globalOptions.projectPath || detectProjectPath();
+
+          // Always show which project is being checked
+          console.log(`\n🔍 Checking stale files in: ${projectPath}`);
+
+          // Require confirmation for autoUpdate
+          if (parsedArgs.autoUpdate) {
+            console.log('\n' + '='.repeat(70));
+            console.log('🔄 STALE FILE AUTO-UPDATE CONFIRMATION');
+            console.log('='.repeat(70));
+            console.log(`📁 Project: ${projectPath}`);
+            console.log('🔍 Action: Check for stale files and auto-update embeddings');
+            console.log('💡 Process: Will update embeddings for files modified since last index');
+            console.log('💾 Storage: Updated embeddings stored in ~/.ambiance/');
+            console.log('='.repeat(70));
+            console.log('');
+
+            const readline = require('readline');
+            const rl = readline.createInterface({
+              input: process.stdin,
+              output: process.stdout,
+            });
+
+            const confirmation = await new Promise<string>(resolve => {
+              rl.question('❓ Continue with auto-update? (y/N): ', (answer: string) => {
+                rl.close();
+                resolve(answer.toLowerCase().trim());
+              });
+            });
+
+            console.log('');
+
+            if (!['y', 'yes'].includes(confirmation)) {
+              console.log('✅ Auto-update cancelled by user.');
+              // Run check without auto-update
+              mergedArgs.autoUpdate = false;
+            }
+          }
+        }
+
         result = await handleManageEmbeddings({
           action,
           projectPath: globalOptions.projectPath || detectProjectPath(),
-          ...parseToolSpecificArgs(toolArgs, ['autoGenerate', 'autoFix', 'batchSize']),
+          projectIdentifier,
+          ...mergedArgs,
         });
         break;
+      }
+
+      case 'ambiance_auto_detect_index':
+      case 'ambiance_index_project':
+      case 'ambiance_reset_indexes':
+      case 'ambiance_start_watching':
+      case 'ambiance_stop_watching':
+      case 'ambiance_get_indexing_status': {
+        // Handle ambiance tools
+        const { ambianceHandlers } = await import('./tools/ambianceTools');
+        const handler = ambianceHandlers[command];
+        if (!handler) {
+          console.error(`Handler not found for ambiance tool: ${command}`);
+          process.exit(1);
+        }
+
+        result = await handler({
+          path: globalOptions.projectPath || detectProjectPath(),
+          ...parseToolSpecificArgs(toolArgs, ['path', 'force', 'skipCloud', 'pattern']),
+        });
+        break;
+      }
 
       default:
         console.error(`Unknown tool command: ${command}`);
@@ -753,22 +1019,35 @@ async function executeToolCommand(
   }
 }
 
-function parseToolSpecificArgs(args: string[], allowedKeys: string[]): { [key: string]: any } {
-  const parsed: { [key: string]: any } = {};
+function parseToolSpecificArgs(args: string[], allowedKeys: string[]): ToolArgMap {
+  const parsed: ToolArgMap = {};
+  const arrayKeys = new Set(['excludepatterns', 'files']); // Keys parsed as arrays (after normalization)
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg.startsWith('--') && allowedKeys.some(key => arg.includes(key.toLowerCase()))) {
-      const key = arg.replace('--', '').replace('-', '');
-      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
-        const value = args[++i];
-        // Try to parse as number or boolean
-        if (value === 'true') parsed[key] = true;
-        else if (value === 'false') parsed[key] = false;
-        else if (!isNaN(Number(value))) parsed[key] = Number(value);
-        else parsed[key] = value;
-      } else {
-        parsed[key] = true;
+    if (arg.startsWith('--')) {
+      const key = arg.replace('--', '').replace(/-/g, '').toLowerCase();
+      const matchedKey = allowedKeys.find(
+        allowed => allowed.replace(/-/g, '').toLowerCase() === key
+      );
+      if (matchedKey) {
+        if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
+          const value = args[++i];
+          // Handle array parameters (comma-separated)
+          if (arrayKeys.has(key)) {
+            parsed[matchedKey] = value
+              .split(',')
+              .map(s => s.trim())
+              .filter(s => s.length > 0);
+          }
+          // Try to parse as number or boolean
+          else if (value === 'true') parsed[matchedKey] = true;
+          else if (value === 'false') parsed[matchedKey] = false;
+          else if (!Number.isNaN(Number(value))) parsed[matchedKey] = Number(value);
+          else parsed[matchedKey] = value;
+        } else {
+          parsed[matchedKey] = true;
+        }
       }
     }
   }
@@ -776,20 +1055,34 @@ function parseToolSpecificArgs(args: string[], allowedKeys: string[]): { [key: s
   return parsed;
 }
 
-function formatToolOutput(result: any, options: any): string {
+function formatToolOutput(result: unknown, options: GlobalOptions): string {
   if (options.format === 'json') {
-    return JSON.stringify(result, null, 2);
-  }
-
-  if (result.success && typeof result === 'object') {
-    return result.content || result.summary || JSON.stringify(result, null, 2);
+    return JSON.stringify(result ?? null, null, 2);
   }
 
   if (typeof result === 'string') {
     return result;
   }
 
-  return JSON.stringify(result, null, 2);
+  if (typeof result === 'object' && result !== null) {
+    const typedResult = result as ToolResultObject;
+    if (typedResult.success) {
+      if (typeof typedResult.content === 'string') {
+        return typedResult.content;
+      }
+      if (typeof typedResult.summary === 'string') {
+        return typedResult.summary;
+      }
+    }
+
+    return JSON.stringify(typedResult, null, 2);
+  }
+
+  if (result === undefined || result === null) {
+    return '';
+  }
+
+  return String(result);
 }
 
 // Main CLI logic

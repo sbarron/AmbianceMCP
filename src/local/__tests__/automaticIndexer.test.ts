@@ -430,6 +430,55 @@ describe('AutomaticIndexer', () => {
 
       jest.useRealTimers();
     });
+
+    it('should trigger incremental embedding updates on file changes', async () => {
+      // This test verifies that file changes trigger embedding updates, not full re-indexing
+      const mockEmbeddingGenerator = {
+        updateProjectEmbeddings: jest.fn().mockResolvedValue({
+          processedFiles: 1,
+          embeddings: 5,
+          totalChunks: 5,
+        }),
+      };
+
+      // Mock the embedding generator
+      jest
+        .spyOn(require('../embeddingGenerator'), 'LocalEmbeddingGenerator')
+        .mockImplementation(() => mockEmbeddingGenerator as any);
+
+      // Mock file system watching
+      let fileChangeCallback: ((eventType: string, filename: string | null) => void) | null = null;
+      const mockWatcher = {
+        close: jest.fn(),
+      };
+      mockFs.watch = jest.fn().mockImplementation((path: any, options: any, callback: any) => {
+        fileChangeCallback = callback;
+        return mockWatcher;
+      }) as jest.MockedFunction<typeof fs.watch>;
+
+      // Start watching
+      await indexer.startWatching('/test/project');
+
+      // Simulate file change
+      if (fileChangeCallback) {
+        fileChangeCallback('change', 'src/index.ts');
+      }
+
+      // Fast forward past debounce period
+      jest.advanceTimersByTime(180000); // 3 minutes
+
+      // Wait for promises to resolve
+      await new Promise(process.nextTick);
+
+      // Verify that incremental embedding update was called
+      expect(mockEmbeddingGenerator.updateProjectEmbeddings).toHaveBeenCalledWith(
+        expect.any(String), // projectId
+        '/test/project',
+        expect.objectContaining({
+          files: ['src/index.ts'], // Should only update changed file
+        })
+      );
+    });
   });
 
   describe('ignore patterns', () => {

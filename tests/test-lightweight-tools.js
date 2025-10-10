@@ -105,6 +105,23 @@ async function testLightweightTools() {
       console.log(`   Folders found: ${result2.metadata.foldersFound}`);
       console.log(`   Languages: ${result2.metadata.primaryLanguages.join(', ')}`);
       console.log(`   Architecture: ${result2.metadata.architecturePatterns.join(', ')}`);
+
+      // Check for file composition data
+      console.log(`   Full metadata keys: ${Object.keys(result2.metadata).join(', ')}`);
+      if (result2.metadata.fileComposition) {
+        console.log('   ✅ File Composition found:');
+        console.log(`     Total files: ${result2.metadata.fileComposition.totalFiles}`);
+        console.log(`     Analyzed files: ${result2.metadata.fileComposition.analyzedFiles}`);
+        const topTypes = Object.entries(result2.metadata.fileComposition.byType)
+          .sort(([,a], [,b]) => b - a)
+          .slice(0, 5);
+        console.log(`     Top file types: ${topTypes.map(([ext, count]) => `${ext}:${count}`).join(', ')}`);
+      } else {
+        console.log('   ❌ No fileComposition found in metadata');
+        console.log(`   fileComposition value: ${result2.metadata.fileComposition}`);
+        console.log(`   Metadata keys: ${Object.keys(result2.metadata).join(', ')}`);
+        console.log(`   Full result:`, JSON.stringify(result2, null, 2));
+      }
     } else {
       console.log('❌ local_project_hints: FAILED');
       console.log(`   Error: ${result2.error}`);
@@ -164,8 +181,33 @@ async function testLightweightTools() {
   }
 }
 
+// Simple test for file composition
+async function testFileComposition() {
+  console.log('🧪 Testing file composition...');
+
+  try {
+    const result = await handleProjectHints({
+      projectPath: process.cwd(),
+      format: 'compact',
+      maxFiles: 10, // Small number for quick test
+    });
+
+    console.log('Result success:', result.success);
+    console.log('Metadata keys:', Object.keys(result.metadata));
+    console.log('fileComposition exists:', !!result.metadata.fileComposition);
+    if (result.metadata.fileComposition) {
+      console.log('fileComposition:', JSON.stringify(result.metadata.fileComposition, null, 2));
+    }
+  } catch (error) {
+    console.error('Error:', error);
+  }
+}
+
 // Run the tests
-testLightweightTools().catch(error => {
+testLightweightTools().then(() => {
+  console.log('\n🧪 Running file composition test...');
+  return testFileComposition();
+}).catch(error => {
   console.error('💥 Test script failed:', error);
   process.exit(1);
 });
