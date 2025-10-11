@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.1+-blue)](https://www.typescriptlang.org/)
-[![Version](https://img.shields.io/badge/version-0.2.3-blue)](https://github.com/sbarron/AmbianceMCP)
+[![Version](https://img.shields.io/badge/version-0.2.4-blue)](https://github.com/sbarron/AmbianceMCP)
 
 Tired of bloated code contexts wasting your AI tokens and slowing down your workflow? Ambiance MCP delivers intelligent, compressed code analysis that slashes token usage by 60-80% while preserving full semantic depth. Get precise context for debugging, understanding, and navigation—offline-ready, multi-language support, and extensible with AI or cloud features. Boost productivity in your IDE without the overhead.
 
@@ -163,6 +163,9 @@ feat: Major enhancements to embedding management, AI tools, and frontend analysi
   - Streamlined CLI documentation with simplified installation instructions
   - Enhanced tool helper utilities and database evidence processing
   - Improved project hints functionality for better codebase navigation
+
+**Change Log: Version 0.2.4"
+feat: Bug fix, missing minmatch dependency
 
 
 ## 📄 License
