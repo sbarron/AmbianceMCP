@@ -183,11 +183,27 @@ feat: Major enhancements to embedding management, AI tools, and frontend analysi
   - Improved project hints functionality for better codebase navigation
 
   **Change Log: Version 0.2.5"
-feat: Expanded AI provider support, improved background embedding processing, fixed sqlite memory leak issue. Improved frontend insights and debug_context tools. 
+feat: Expanded AI provider support, multi-model comparison tool, enhanced debug context analysis
 
-- **Embedding Management & Automation**: 
+- **AI Provider Expansion**:
+  - Added support for `openrouter`, `grok`, and `groq` providers
+  - Implemented provider-specific API key environment variable priority system
+  - Enhanced provider configuration with fallback API key support
+
+- **Multi-Model Comparison Tool**:
+  - New `compare` CLI command for side-by-side AI model evaluation
+  - Support for comparing multiple providers and models with the same prompt
+  - Performance metrics, usage statistics, and response comparison
+  - Configurable temperature, max tokens, and system prompts
+
+- **Debug Context Enhancements**:
+  - Improved error context processing with focused embedding queries
+  - Enhanced symbol matching and error type detection
+  - Better semantic relevance ranking for debug assistance
+
+- **Embedding Management & Automation**:
   - Added CLI controls for manual start/stop of automated embeddings updates
-  
+  - Fixed SQLite memory leak issues in embedding storage
 
 
 ## 📄 License
