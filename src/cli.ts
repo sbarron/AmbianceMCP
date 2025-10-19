@@ -7,6 +7,9 @@
  * Supports MCP server mode, help display, and direct tool execution.
  */
 
+import type { ProviderType } from './core/openaiService';
+import type { ModelTargetSpec } from './tools/aiTools/multiModelCompare';
+
 const packageJson = require('../../package.json');
 
 // Import local tool handlers for CLI access (using dynamic imports to avoid issues)
@@ -270,12 +273,12 @@ const ENVIRONMENT_VARIABLES: EnvVarCategory[] = [
       },
       {
         name: 'OPENAI_BASE_MODEL',
-        defaultValue: 'gpt-4o',
+        defaultValue: 'gpt-5',
         description: 'Primary reasoning model requested by default.',
       },
       {
         name: 'OPENAI_MINI_MODEL',
-        defaultValue: 'gpt-4o-mini',
+        defaultValue: 'gpt-5-mini',
         description: 'Lightweight model used for fast operations.',
       },
       {
@@ -287,7 +290,7 @@ const ENVIRONMENT_VARIABLES: EnvVarCategory[] = [
         name: 'OPENAI_PROVIDER',
         defaultValue: 'openai',
         description:
-          'Explicit provider selector (openai, qwen, azure, anthropic, together, custom).',
+          'Explicit provider selector (openai, qwen, azure, anthropic, together, openrouter, grok, groq, custom).',
       },
       {
         name: 'OPENAI_ORG_ID',
@@ -387,6 +390,7 @@ const commands = [
   'frontend',
   'debug',
   'grep',
+  'compare',
   'embeddings',
   'ambiance_auto_detect_index',
   'ambiance_index_project',
@@ -809,6 +813,89 @@ async function executeToolCommand(
         break;
       }
 
+      case 'compare': {
+        const parsed = parseToolSpecificArgs(toolArgs, [
+          'prompt',
+          'models',
+          'system',
+          'temperature',
+          'maxTokens',
+        ]);
+
+        const positionalArgs: string[] = [];
+        for (let i = 0; i < toolArgs.length; i++) {
+          const arg = toolArgs[i];
+          if (arg.startsWith('--')) {
+            if (i + 1 < toolArgs.length && !toolArgs[i + 1].startsWith('--')) {
+              i += 1; // Skip the value paired with this flag
+            }
+            continue;
+          }
+          positionalArgs.push(arg);
+        }
+
+        const promptCandidate =
+          (typeof parsed.prompt === 'string' && parsed.prompt.length > 0
+            ? parsed.prompt
+            : undefined) || positionalArgs[positionalArgs.length - 1];
+
+        if (!promptCandidate) {
+          console.error('Error: prompt is required for compare command');
+          process.exit(1);
+        }
+
+        let modelsInput: string | undefined;
+        if (typeof parsed.models === 'string') {
+          modelsInput = parsed.models;
+        } else if (Array.isArray(parsed.models)) {
+          modelsInput = parsed.models.join(',');
+        } else if (parsed.models === true) {
+          modelsInput = '';
+        }
+
+        const envModels = process.env.AI_COMPARE_MODELS?.trim();
+        if (!modelsInput || modelsInput.trim().length === 0) {
+          modelsInput =
+            (envModels && envModels.length > 0 ? envModels : DEFAULT_COMPARE_MODELS) ?? '';
+        }
+
+        let modelSpecs: ModelTargetSpec[];
+        try {
+          modelSpecs = parseModelSpecsInput(modelsInput);
+        } catch (parseError) {
+          console.error(
+            'Error parsing models:',
+            parseError instanceof Error ? parseError.message : String(parseError)
+          );
+          process.exit(1);
+        }
+
+        if (modelSpecs.length === 0) {
+          console.error('Error: at least one model must be provided (e.g. openai:gpt-5)');
+          process.exit(1);
+        }
+
+        const { runMultiModelComparison, formatComparisonResultMarkdown } = await import(
+          './tools/aiTools/multiModelCompare'
+        );
+
+        const comparison = await runMultiModelComparison({
+          prompt: promptCandidate,
+          systemPrompt: typeof parsed.system === 'string' ? parsed.system : undefined,
+          temperature: typeof parsed.temperature === 'number' ? parsed.temperature : undefined,
+          maxTokens: typeof parsed.maxTokens === 'number' ? parsed.maxTokens : undefined,
+          models: modelSpecs,
+        });
+
+        if (globalOptions.format === 'json') {
+          result = comparison;
+        } else {
+          result = formatComparisonResultMarkdown(comparison);
+        }
+
+        break;
+      }
+
       case 'embeddings': {
         const action = toolArgs.find(arg => !arg.startsWith('--')) || 'status';
         let projectIdentifier: string | undefined;
@@ -1017,6 +1104,83 @@ async function executeToolCommand(
     );
     process.exit(1);
   }
+}
+
+const MODEL_PROVIDER_ALIASES: Record<string, ProviderType> = {
+  openai: 'openai',
+  default: 'openai',
+  qwen: 'qwen',
+  aliyun: 'qwen',
+  azure: 'azure',
+  anthropic: 'anthropic',
+  claude: 'anthropic',
+  together: 'together',
+  openrouter: 'openrouter',
+  router: 'openrouter',
+  xai: 'grok',
+  grok: 'grok',
+  groq: 'groq',
+  custom: 'custom',
+};
+
+const DEFAULT_COMPARE_MODELS = 'openai:gpt-5,openai:gpt-4o';
+
+function parseModelSpecsInput(input: string): ModelTargetSpec[] {
+  return input
+    .split(',')
+    .map(spec => spec.trim())
+    .filter(spec => spec.length > 0)
+    .map(parseSingleModelSpec);
+}
+
+function parseSingleModelSpec(rawSpec: string): ModelTargetSpec {
+  let working = rawSpec;
+  let label: string | undefined;
+
+  const labelIndex = working.indexOf('=');
+  if (labelIndex !== -1) {
+    label = working.slice(labelIndex + 1).trim();
+    working = working.slice(0, labelIndex);
+  }
+
+  let providerToken: string | undefined;
+  let modelToken: string;
+  let baseUrl: string | undefined;
+
+  const colonIndex = working.indexOf(':');
+  if (colonIndex !== -1) {
+    providerToken = working.slice(0, colonIndex).trim();
+    modelToken = working.slice(colonIndex + 1).trim();
+  } else {
+    modelToken = working.trim();
+  }
+
+  if (!modelToken) {
+    throw new Error(`Invalid model specification: "${rawSpec}"`);
+  }
+
+  if (providerToken) {
+    const atIndex = providerToken.indexOf('@');
+    if (atIndex !== -1) {
+      baseUrl = providerToken.slice(atIndex + 1).trim();
+      providerToken = providerToken.slice(0, atIndex).trim();
+    }
+  }
+
+  const providerAlias = providerToken ? providerToken.toLowerCase() : undefined;
+  const provider: ProviderType =
+    (providerAlias && MODEL_PROVIDER_ALIASES[providerAlias]) || 'openai';
+
+  if (providerAlias && !MODEL_PROVIDER_ALIASES[providerAlias]) {
+    throw new Error(`Unknown provider alias "${providerToken}" in "${rawSpec}"`);
+  }
+
+  return {
+    provider,
+    model: modelToken,
+    label: label || `${provider}:${modelToken}`,
+    baseUrl,
+  };
 }
 
 function parseToolSpecificArgs(args: string[], allowedKeys: string[]): ToolArgMap {

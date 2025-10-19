@@ -10,7 +10,13 @@
  * @context: Provides intelligent code analysis with 70-90% token reduction through AI understanding
  */
 
-import { createOpenAIService, OpenAIService } from '../../core/openaiService';
+import {
+  createOpenAIService,
+  OpenAIService,
+  ProviderType,
+  PROVIDER_API_KEY_ENV,
+  resolveProviderApiKey,
+} from '../../core/openaiService';
 import { SemanticCompactor } from '../../core/compactor/semanticCompactor';
 import {
   enhancedSemanticCompactor,
@@ -38,26 +44,51 @@ let openaiService: OpenAIService | null = null;
  */
 function getOpenAIService(): OpenAIService {
   if (!openaiService) {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error(
-        'OPENAI_API_KEY environment variable is required for OpenAI-compatible tools'
-      );
-    }
-
     // Determine provider from base URL or default to OpenAI
-    let provider: any = 'openai';
+    const supportedProviders: ProviderType[] = [
+      'openai',
+      'qwen',
+      'azure',
+      'anthropic',
+      'together',
+      'openrouter',
+      'grok',
+      'groq',
+      'custom',
+    ];
+
+    const explicitProvider = (process.env.OPENAI_PROVIDER?.toLowerCase() ?? '') as ProviderType;
+    let provider: ProviderType = supportedProviders.includes(explicitProvider)
+      ? explicitProvider
+      : 'openai';
+
     const baseUrl = process.env.OPENAI_BASE_URL;
 
-    if (baseUrl) {
+    if (
+      (!process.env.OPENAI_PROVIDER || provider === 'custom' || provider === 'openai') &&
+      baseUrl
+    ) {
       const host = new URL(baseUrl).host.toLowerCase();
-      if (host.includes('aliyuncs.com')) provider = 'qwen';
+      if (host.includes('aliyuncs.com') || host.includes('qwen')) provider = 'qwen';
       else if (host.includes('anthropic.com')) provider = 'anthropic';
       else if (host.includes('together.xyz')) provider = 'together';
+      else if (host.includes('openrouter.ai')) provider = 'openrouter';
+      else if (host.includes('api.x.ai') || host.endsWith('.x.ai')) provider = 'grok';
+      else if (host.includes('groq.com')) provider = 'groq';
       else if (host.includes('azure')) provider = 'azure';
     }
 
+    const apiKey = resolveProviderApiKey(provider);
+    if (!apiKey) {
+      throw new Error(
+        `No API key found for provider "${provider}". Please set one of: ${(
+          PROVIDER_API_KEY_ENV[provider] || ['OPENAI_API_KEY']
+        ).join(', ')}`
+      );
+    }
+
     openaiService = createOpenAIService({
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey,
       provider,
       model: process.env.OPENAI_BASE_MODEL,
       miniModel: process.env.OPENAI_MINI_MODEL,
@@ -68,6 +99,18 @@ function getOpenAIService(): OpenAIService {
   }
   return openaiService;
 }
+
+const PROVIDER_KEY_HINTS: Record<ProviderType, string[]> = {
+  openai: ['OPENAI_API_KEY'],
+  qwen: ['QWEN_API_KEY', 'DASHSCOPE_API_KEY', 'OPENAI_API_KEY'],
+  azure: ['AZURE_OPENAI_API_KEY', 'OPENAI_API_KEY'],
+  anthropic: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+  together: ['TOGETHER_API_KEY', 'OPENAI_API_KEY'],
+  openrouter: ['OPENROUTER_API_KEY', 'OPENAI_API_KEY'],
+  grok: ['XAI_API_KEY', 'GROK_API_KEY', 'OPENAI_API_KEY'],
+  groq: ['GROQ_API_KEY', 'OPENAI_API_KEY'],
+  custom: ['OPENAI_API_KEY'],
+};
 
 export const aiSemanticCompactTool = {
   name: 'ai_get_context',

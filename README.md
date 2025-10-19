@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.1+-blue)](https://www.typescriptlang.org/)
-[![Version](https://img.shields.io/badge/version-0.2.4-blue)](https://github.com/sbarron/AmbianceMCP)
+[![Version](https://img.shields.io/badge/version-0.2.5-blue)](https://github.com/sbarron/AmbianceMCP)
 
 Tired of bloated code contexts wasting your AI tokens and slowing down your workflow? Ambiance MCP delivers intelligent, compressed code analysis that slashes token usage by 60-80% while preserving full semantic depth. Get precise context for debugging, understanding, and navigation—offline-ready, multi-language support, and extensible with AI or cloud features. Boost productivity in your IDE without the overhead.
 
@@ -90,8 +90,25 @@ Set these environment variables in your IDE config or terminal:
 | `OPENAI_API_KEY` | Unlock AI-powered insights | No | - |
 | `AMBIANCE_API_KEY` | Access GitHub repos | No | - |
 
-For AI: Add `OPENAI_BASE_MODEL=gpt-4` (or your preferred model).  
+For AI: Add `OPENAI_BASE_MODEL=gpt-4` (or your preferred model) and set `OPENAI_PROVIDER` to target a specific vendor.  
 For embeddings: Set `LOCAL_EMBEDDING_MODEL=all-MiniLM-L6-v2` for customization.
+
+### Provider Credentials
+
+AI features now support multiple OpenAI-compatible providers. Set one of the following keys alongside `OPENAI_PROVIDER` (default: `openai`):
+
+| Provider (`OPENAI_PROVIDER`) | Primary Key(s) | Notes |
+|-----------------------------|----------------|-------|
+| `openai` | `OPENAI_API_KEY` | Supports GPT‑5 responses API with caching metadata |
+| `anthropic` | `ANTHROPIC_API_KEY`, fallback `OPENAI_API_KEY` | Claude 3.5 / Claude 3 family |
+| `openrouter` | `OPENROUTER_API_KEY`, fallback `OPENAI_API_KEY` | OpenRouter aggregated models |
+| `grok` | `XAI_API_KEY` or `GROK_API_KEY`, fallback `OPENAI_API_KEY` | Grok (xAI) via OpenAI protocol |
+| `groq` | `GROQ_API_KEY`, fallback `OPENAI_API_KEY` | Groq hosted Llama models |
+| `qwen` | `QWEN_API_KEY` or `DASHSCOPE_API_KEY`, fallback `OPENAI_API_KEY` | Qwen compatible endpoints |
+| `together` | `TOGETHER_API_KEY`, fallback `OPENAI_API_KEY` | Together.ai models |
+| `azure` | `AZURE_OPENAI_API_KEY`, fallback `OPENAI_API_KEY` | Requires `AZURE_OPENAI_ENDPOINT` |
+
+You can also set a default comparison list with `AI_COMPARE_MODELS` (comma-separated `provider:model` pairs) for the CLI comparison utility.
 
 ## Advanced Usage
 
@@ -131,6 +148,7 @@ Run tools directly for testing or scripts—no IDE needed.
 - `ambiance-mcp summary src/index.ts --include-symbols`
 - `ambiance-mcp debug "TypeError: undefined"`
 - `ambiance-mcp grep "function $NAME($ARGS)" --language typescript`
+- `ambiance-mcp compare --prompt "Summarize the new release notes" --models openai:gpt-5,anthropic:claude-3-5-sonnet-latest`
 
 Global options: `--project-path`, `--format json`, `--output file.json`, `--verbose`.
 
@@ -140,7 +158,7 @@ For full options, run `ambiance-mcp --help`.
 - Source & contributions: https://github.com/sbarron/AmbianceMCP
 - Detailed CLI: `ambiance-mcp --help --expanded`
 
-**Change Log: Version 0.2.3"
+**Change Log: Version 0.2.4"
 feat: Major enhancements to embedding management, AI tools, and frontend analysis
 
 - **Embedding Management & Automation**: 
@@ -164,8 +182,12 @@ feat: Major enhancements to embedding management, AI tools, and frontend analysi
   - Enhanced tool helper utilities and database evidence processing
   - Improved project hints functionality for better codebase navigation
 
-**Change Log: Version 0.2.4"
-feat: Bug fix, missing minmatch dependency
+  **Change Log: Version 0.2.5"
+feat: Expanded AI provider support, improved background embedding processing, fixed sqlite memory leak issue. Improved frontend insights and debug_context tools. 
+
+- **Embedding Management & Automation**: 
+  - Added CLI controls for manual start/stop of automated embeddings updates
+  
 
 
 ## 📄 License

@@ -211,6 +211,35 @@ describe('OpenAIService', () => {
         })
       );
     });
+
+    it('maps max_completion_tokens to max_tokens for chat models like gpt-4o', async () => {
+      mockChatCreate.mockResolvedValue({
+        id: 'chat_map_max_tokens',
+        choices: [
+          { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      } as any);
+
+      await service.createChatCompletion({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'user',
+            content:
+              'Validate that providing max_completion_tokens is accepted by mapping to max_tokens.',
+          },
+        ],
+        max_completion_tokens: 321,
+      } as any);
+
+      expect(mockChatCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          max_tokens: 321,
+        })
+      );
+      expect(mockChatCreate).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('OpenAI GPT-4.1 Models', () => {

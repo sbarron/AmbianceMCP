@@ -180,8 +180,8 @@ class AmbianceMCPServer {
       USE_LOCAL_EMBEDDINGS: 'true',
       LOCAL_EMBEDDING_MODEL: 'all-MiniLM-L6-v2',
       OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-      OPENAI_BASE_MODEL: 'gpt-4o',
-      OPENAI_MINI_MODEL: 'gpt-4o-mini',
+      OPENAI_BASE_MODEL: 'gpt-5',
+      OPENAI_MINI_MODEL: 'gpt-5-mini',
       OPENAI_EMBEDDINGS_MODEL: 'text-embedding-3-small',
     };
 

@@ -27,7 +27,13 @@ import { FileDiscovery, FileInfo } from '../core/compactor/fileDiscovery';
 import { readFile } from 'fs/promises';
 import * as path from 'path';
 import { logger } from '../utils/logger';
-import { OpenAIService, createOpenAIService, ProviderType } from '../core/openaiService';
+import {
+  OpenAIService,
+  createOpenAIService,
+  ProviderType,
+  resolveProviderApiKey,
+  PROVIDER_API_KEY_ENV,
+} from '../core/openaiService';
 import { projectHintsComposer, ProjectHintsWithEvidence } from './projectHints/composer';
 import { LocalEmbeddingStorage } from '../local/embeddingStorage';
 import { LocalEmbeddingGenerator } from '../local/embeddingGenerator';
@@ -115,13 +121,13 @@ export class ProjectHintsGenerator {
   private useAI = false;
 
   constructor() {
-    if (process.env.OPENAI_API_KEY) {
-      try {
-        // Determine provider type from environment or base URL
-        const provider = this.determineProvider();
+    const provider = this.determineProvider();
+    const apiKey = resolveProviderApiKey(provider);
 
+    if (apiKey) {
+      try {
         this.openaiService = createOpenAIService({
-          apiKey: process.env.OPENAI_API_KEY,
+          apiKey,
           provider,
           model: process.env.OPENAI_BASE_MODEL,
           miniModel: process.env.OPENAI_MINI_MODEL,
@@ -143,6 +149,36 @@ export class ProjectHintsGenerator {
         this.openaiService = null;
         this.useAI = false;
       }
+    } else if (process.env.OPENAI_API_KEY) {
+      // Legacy compatibility: allow OPENAI_API_KEY to trigger OpenAI provider when detection fails
+      try {
+        this.openaiService = createOpenAIService({
+          apiKey: process.env.OPENAI_API_KEY,
+          provider,
+          model: process.env.OPENAI_BASE_MODEL,
+          miniModel: process.env.OPENAI_MINI_MODEL,
+          embeddingsModel: process.env.OPENAI_EMBEDDINGS_MODEL,
+          baseUrl: process.env.OPENAI_BASE_URL,
+          organization: process.env.OPENAI_ORG_ID,
+        });
+        this.useAI = true;
+        logger.info('ProjectHintsGenerator initialized with fallback OpenAI service', {
+          provider: this.openaiService.getProviderInfo().provider,
+          model: this.openaiService.getProviderInfo().model,
+          miniModel: this.openaiService.getProviderInfo().miniModel,
+        });
+      } catch (error) {
+        logger.warn('Failed to initialize fallback OpenAI service for project hints', {
+          error: (error as Error).message,
+        });
+        this.openaiService = null;
+        this.useAI = false;
+      }
+    } else {
+      logger.debug('Skipping AI-backed project hints due to missing provider credentials', {
+        provider,
+        expectedEnv: PROVIDER_API_KEY_ENV[provider] || ['OPENAI_API_KEY'],
+      });
     }
   }
 
@@ -154,7 +190,17 @@ export class ProjectHintsGenerator {
     const explicitProvider = process.env.OPENAI_PROVIDER?.toLowerCase() as ProviderType;
     if (
       explicitProvider &&
-      ['openai', 'qwen', 'azure', 'anthropic', 'together', 'custom'].includes(explicitProvider)
+      [
+        'openai',
+        'qwen',
+        'azure',
+        'anthropic',
+        'together',
+        'openrouter',
+        'grok',
+        'groq',
+        'custom',
+      ].includes(explicitProvider)
     ) {
       return explicitProvider;
     }
@@ -168,6 +214,9 @@ export class ProjectHintsGenerator {
         if (host.includes('azure')) return 'azure';
         if (host.includes('anthropic.com')) return 'anthropic';
         if (host.includes('together.xyz')) return 'together';
+        if (host.includes('openrouter.ai')) return 'openrouter';
+        if (host.includes('api.x.ai') || host.endsWith('.x.ai')) return 'grok';
+        if (host.includes('groq.com')) return 'groq';
         if (host.includes('openai.com')) return 'openai';
       } catch {
         // Invalid URL, fall back to default

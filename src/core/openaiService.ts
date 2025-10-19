@@ -18,7 +18,16 @@ import { logger } from '../utils/logger';
 import { validateDynamicSignal, Message, ValidationError } from './validation';
 
 // Provider types
-export type ProviderType = 'openai' | 'qwen' | 'azure' | 'anthropic' | 'together' | 'custom';
+export type ProviderType =
+  | 'openai'
+  | 'qwen'
+  | 'azure'
+  | 'anthropic'
+  | 'together'
+  | 'openrouter'
+  | 'grok'
+  | 'groq'
+  | 'custom';
 
 // Provider-specific configurations
 interface ProviderConfig {
@@ -30,6 +39,30 @@ interface ProviderConfig {
   defaultMiniModel: string;
   defaultEmbeddingsModel?: string;
   baseUrl?: string;
+}
+
+// Provider-specific API key environment variable priority
+export const PROVIDER_API_KEY_ENV: Record<ProviderType, string[]> = {
+  openai: ['OPENAI_API_KEY'],
+  qwen: ['QWEN_API_KEY', 'DASHSCOPE_API_KEY', 'OPENAI_API_KEY'],
+  azure: ['AZURE_OPENAI_API_KEY', 'OPENAI_API_KEY'],
+  anthropic: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+  together: ['TOGETHER_API_KEY', 'OPENAI_API_KEY'],
+  openrouter: ['OPENROUTER_API_KEY', 'OPENAI_API_KEY'],
+  grok: ['XAI_API_KEY', 'GROK_API_KEY', 'OPENAI_API_KEY'],
+  groq: ['GROQ_API_KEY', 'OPENAI_API_KEY'],
+  custom: ['OPENAI_API_KEY'],
+};
+
+export function resolveProviderApiKey(provider: ProviderType): string | undefined {
+  const envKeys = PROVIDER_API_KEY_ENV[provider] || PROVIDER_API_KEY_ENV.openai;
+  for (const key of envKeys) {
+    const value = process.env[key];
+    if (value && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 // Model configurations
@@ -213,6 +246,30 @@ export class OpenAIService {
         defaultEmbeddingsModel: process.env.OPENAI_EMBEDDINGS_MODEL, // set for Together if applicable
         baseUrl: 'https://api.together.xyz/v1',
       },
+      openrouter: {
+        name: 'OpenRouter',
+        supportsStreaming: true,
+        defaultModel: process.env.OPENAI_BASE_MODEL || 'openrouter/auto',
+        defaultMiniModel: process.env.OPENAI_MINI_MODEL || 'openrouter/auto-mini',
+        defaultEmbeddingsModel: process.env.OPENAI_EMBEDDINGS_MODEL,
+        baseUrl: 'https://openrouter.ai/api/v1',
+      },
+      grok: {
+        name: 'xAI Grok',
+        supportsStreaming: true,
+        defaultModel: process.env.OPENAI_BASE_MODEL || 'grok-2-latest',
+        defaultMiniModel: process.env.OPENAI_MINI_MODEL || 'grok-2-mini',
+        defaultEmbeddingsModel: process.env.OPENAI_EMBEDDINGS_MODEL,
+        baseUrl: 'https://api.x.ai/v1',
+      },
+      groq: {
+        name: 'Groq',
+        supportsStreaming: true,
+        defaultModel: process.env.OPENAI_BASE_MODEL || 'llama-3.1-70b-versatile',
+        defaultMiniModel: process.env.OPENAI_MINI_MODEL || 'llama-3.1-8b-instant',
+        defaultEmbeddingsModel: process.env.OPENAI_EMBEDDINGS_MODEL,
+        baseUrl: 'https://api.groq.com/openai/v1',
+      },
       custom: {
         name: 'Custom Provider',
         supportsStreaming: true,
@@ -229,14 +286,23 @@ export class OpenAIService {
    * Resolve provider by base URL for common OpenAI-compatible services
    */
   private resolveProvider(provider: ProviderType, baseUrl?: string): ProviderType {
-    if (!baseUrl || provider !== 'custom') return provider;
+    if (!baseUrl) return provider;
     try {
       const host = new URL(baseUrl).host.toLowerCase();
-      if (host.includes('openrouter.ai')) return 'openai';
-      if (host.includes('groq.com')) return 'openai';
+
+      const shouldResolve = provider === 'custom' || provider === 'openai';
+
+      if (!shouldResolve) {
+        return provider;
+      }
+
+      if (host.includes('openrouter.ai')) return 'openrouter';
+      if (host.includes('api.x.ai') || host.endsWith('.x.ai')) return 'grok';
+      if (host.includes('groq.com')) return 'groq';
       if (host.includes('together.xyz')) return 'together';
-      if (host.includes('aliyuncs.com')) return 'qwen';
+      if (host.includes('aliyuncs.com') || host.includes('qwen')) return 'qwen';
       if (host.includes('anthropic.com')) return 'anthropic';
+      if (host.includes('azure')) return 'azure';
       if (host.includes('openai.com')) return 'openai';
       return provider;
     } catch {
@@ -305,6 +371,36 @@ export class OpenAIService {
       },
       'mistralai/Mistral-7B-Instruct-v0.2': {
         maxTokensLimit: 32768,
+        supportsFunctions: true,
+        supportsTools: true,
+      },
+      'openrouter/auto': {
+        maxTokensLimit: 128000,
+        supportsFunctions: true,
+        supportsTools: true,
+      },
+      'openrouter/auto-mini': {
+        maxTokensLimit: 64000,
+        supportsFunctions: true,
+        supportsTools: true,
+      },
+      'grok-2-latest': {
+        maxTokensLimit: 32768,
+        supportsFunctions: true,
+        supportsTools: true,
+      },
+      'grok-2-mini': {
+        maxTokensLimit: 16384,
+        supportsFunctions: true,
+        supportsTools: true,
+      },
+      'llama-3.1-70b-versatile': {
+        maxTokensLimit: 8192,
+        supportsFunctions: true,
+        supportsTools: true,
+      },
+      'llama-3.1-8b-instant': {
+        maxTokensLimit: 8192,
         supportsFunctions: true,
         supportsTools: true,
       },
@@ -598,7 +694,19 @@ export class OpenAIService {
       incomplete_reason: incompleteReason ?? null,
       original_finish_reason: originalFinishReason,
       truncated,
+      cache_status:
+        ((response as any).metadata &&
+          typeof (response as any).metadata === 'object' &&
+          'response_cache' in (response as any).metadata &&
+          (response as any).metadata?.response_cache) ||
+        (response as any).response_cache ||
+        null,
     };
+
+    const providerMetadata = (response as any).metadata;
+    if (providerMetadata && typeof providerMetadata === 'object') {
+      (completion as any).response_metadata.provider_metadata = providerMetadata;
+    }
 
     return completion;
   }
@@ -783,6 +891,13 @@ export class OpenAIService {
         lowered_reasoning_effort: adjustments.loweredReasoningEffort,
       };
 
+      if (metadata.cache_status) {
+        logger.info('Reasoning response cache metadata', {
+          model: targetModel,
+          cache: metadata.cache_status,
+        });
+      }
+
       const truncatedResult =
         metadata.truncated === true && lastIncompleteReason === 'max_output_tokens';
 
@@ -846,10 +961,18 @@ export class OpenAIService {
       normalizedParams.temperature = 1;
     }
 
-    // Handle max_tokens parameter
+    // Map max_completion_tokens (modern) to max_tokens for legacy chat completions
+    if (
+      (normalizedParams as any).max_completion_tokens !== undefined &&
+      (normalizedParams as any).max_tokens === undefined
+    ) {
+      (normalizedParams as any).max_tokens = (normalizedParams as any).max_completion_tokens;
+      delete (normalizedParams as any).max_completion_tokens;
+    }
+
+    // Handle provider-specific max tokens parameter name (future-proofing)
     if (this.providerConfig.maxTokensParam && this.providerConfig.maxTokensParam !== 'max_tokens') {
-      // This would handle cases where providers use different parameter names
-      // For now, most providers use 'max_tokens' so we'll keep it as is
+      // Most providers we target accept 'max_tokens'; adapter left as-is for compatibility.
     }
 
     // Model-specific enforced temperature

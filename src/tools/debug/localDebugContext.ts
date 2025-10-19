@@ -67,6 +67,9 @@ export interface ParsedError {
   symbol?: string;
   errorType?: string;
   raw: string;
+  errorContext?: string; // Focused context for embedding queries
+  startLine: number;
+  endLine: number;
 }
 
 export interface SymbolInfo {
@@ -112,7 +115,7 @@ export interface DebugContextReport {
  */
 export const localDebugContextTool = {
   name: 'local_debug_context',
-  description: `🐛 Gather comprehensive debug context from error logs and codebase analysis with embedding enhancement
+  description: `🐛 Gather comprehensive debug context from error logs and codebase analysis with focused embedding enhancement
 
 **When to use**:
 - When you have error logs, stack traces, or console output to analyze
@@ -121,10 +124,12 @@ export const localDebugContextTool = {
 - Before using AI debugging tools to get structured context
 
 **What this does**:
-- Parses error logs to extract file paths, line numbers, and symbols
+- Parses error logs to extract file paths, line numbers, symbols, and error types
+- Extracts focused error contexts (~200 characters) for precise embedding queries
 - Uses tree-sitter to build symbol indexes for TypeScript/JavaScript/Python files
 - Searches codebase for symbol matches with surrounding context
-- **NEW**: Uses semantic embeddings to find related code beyond exact symbol matches
+- **ENHANCED**: Uses semantic embeddings with focused error contexts for better relevance
+- Processes each error/warning separately for improved semantic matching
 - Ranks matches by relevance (severity, recency, frequency, semantic similarity)
 - Returns comprehensive debug report ready for AI analysis
 
@@ -132,7 +137,7 @@ export const localDebugContextTool = {
 **Output**: Structured debug context report with ranked matches and semantic insights
 
 **Performance**: Fast local analysis, ~1-3 seconds depending on codebase size
-**Embedding Features**: Automatically uses embeddings when available for enhanced context`,
+**Embedding Features**: Focused context queries reduce noise and improve relevance`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -192,6 +197,7 @@ export const localDebugContextTool = {
 
 /**
  * Parse terminal or log output to extract file paths, line numbers and error types.
+ * Enhanced to extract focused error contexts (next 200 characters) for better embedding queries.
  */
 function parseErrorLogs(logText: string): ParsedError[] {
   const errors: ParsedError[] = [];
@@ -207,6 +213,7 @@ function parseErrorLogs(logText: string): ParsedError[] {
     // Node/JavaScript style stack traces
     const nodeMatch = line.match(/at (?:([^\s]+)\s+)?\(?(.+):(\d+):(\d+)\)?/);
     if (nodeMatch) {
+      const errorContext = extractErrorContext(logText, lines.indexOf(line), 200);
       errors.push({
         filePath: nodeMatch[2],
         line: Number(nodeMatch[3]),
@@ -214,6 +221,9 @@ function parseErrorLogs(logText: string): ParsedError[] {
         symbol: nodeMatch[1],
         errorType: currentType,
         raw: line,
+        errorContext,
+        startLine: Number(nodeMatch[3]),
+        endLine: Number(nodeMatch[3]),
       });
       continue;
     }
@@ -221,12 +231,16 @@ function parseErrorLogs(logText: string): ParsedError[] {
     // Python style stack traces
     const pyMatch = line.match(/File "(.+)", line (\d+)(?:, in (.+))?/);
     if (pyMatch) {
+      const errorContext = extractErrorContext(logText, lines.indexOf(line), 200);
       errors.push({
         filePath: pyMatch[1],
         line: Number(pyMatch[2]),
         symbol: pyMatch[3],
         errorType: currentType,
         raw: line,
+        errorContext,
+        startLine: Number(pyMatch[2]),
+        endLine: Number(pyMatch[2]),
       });
     }
   }
@@ -238,16 +252,48 @@ function parseErrorLogs(logText: string): ParsedError[] {
     );
 
     for (const token of tokens.slice(0, 5)) {
-      errors.push({
-        filePath: '',
-        line: 0,
-        symbol: token,
-        raw: token,
-      });
+      const errorContext = extractErrorContext(logText, Math.floor(logText.indexOf(token) / 80), 200);
+        errors.push({
+          filePath: '',
+        line: Math.floor(logText.indexOf(token) / 80) + 1,
+          symbol: token,
+          raw: token,
+          errorContext,
+        startLine: Math.floor(logText.indexOf(token) / 80) + 1,
+        endLine: Math.floor(logText.indexOf(token) / 80) + 1,
+        });
     }
   }
 
   return errors;
+}
+
+/**
+ * Extract approximately 200 characters of context after an error line
+ */
+function extractErrorContext(
+  logText: string,
+  errorLineIndex: number,
+  contextLength: number = 200
+): string {
+  const lines = logText.split(/\r?\n/);
+  let context = '';
+
+  // Start from the error line and collect subsequent lines
+  for (let i = errorLineIndex; i < lines.length && context.length < contextLength; i++) {
+    if (i === errorLineIndex) {
+      // For the error line itself, include it
+      context += lines[i] + ' ';
+    } else {
+      // For subsequent lines, add them until we reach the desired length
+      const remainingLength = contextLength - context.length;
+      if (remainingLength > 0) {
+        context += lines[i].substring(0, remainingLength) + ' ';
+      }
+    }
+  }
+
+  return context.trim().substring(0, contextLength);
 }
 
 /**
@@ -495,11 +541,11 @@ async function ensureEmbeddingsForProject(
 }
 
 /**
- * Search for semantically similar code using embeddings
+ * Search for semantically similar code using embeddings with focused error contexts
  */
 async function searchSemanticSimilarities(
   projectId: string,
-  queryText: string,
+  errors: ParsedError[],
   symbols: string[],
   maxSimilarChunks: number = 5,
   similarityThreshold: number = 0.2
@@ -509,50 +555,80 @@ async function searchSemanticSimilarities(
     return [];
   }
 
+  const allSemanticMatches: SearchMatch[] = [];
+
   try {
-    // Generate embedding for the error context/query
-    const errorContext = `${queryText} ${symbols.join(' ')}`;
-    const queryEmbedding = await embeddingGenerator.generateQueryEmbedding(errorContext);
+    // Process each error with its focused context separately for better results
+    for (let i = 0; i < errors.length && allSemanticMatches.length < maxSimilarChunks * 2; i++) {
+      const error = errors[i];
 
-    // Search for similar chunks
-    const similarChunks = await embeddingStorage.searchSimilarEmbeddings(
-      projectId,
-      queryEmbedding,
-      maxSimilarChunks,
-      similarityThreshold
-    );
+      // Use the focused error context if available, otherwise fall back to the entire error
+      const queryContext = error.errorContext || `${error.raw} ${symbols.join(' ')}`;
 
-    if (similarChunks.length === 0) {
-      logger.debug('🔍 No semantically similar chunks found');
-      return [];
+      if (queryContext.trim().length < 10) continue; // Skip very short contexts
+
+      // Generate embedding for this specific error context
+      const queryEmbedding = await embeddingGenerator.generateQueryEmbedding(queryContext);
+
+      // Search for similar chunks for this specific error
+      const similarChunks = await embeddingStorage.searchSimilarEmbeddings(
+        projectId,
+        queryEmbedding,
+        Math.ceil(maxSimilarChunks / errors.length) + 1, // Distribute chunks across errors
+        similarityThreshold
+      );
+
+      if (similarChunks.length === 0) continue;
+
+      logger.debug('🎯 Found semantically similar code chunks for error', {
+        errorIndex: i,
+        errorType: error.errorType,
+        contextLength: queryContext.length,
+        chunksFound: similarChunks.length,
+        topSimilarity: similarChunks[0]?.similarity,
+      });
+
+      // Convert SimilarChunk to SearchMatch format with enhanced metadata
+      // Filter to exclude documentation files (.md, .txt, etc.) but allow all code files
+      const semanticMatches: SearchMatch[] = similarChunks
+        .filter(chunk => {
+          const filePath = path.relative(process.cwd(), chunk.chunk.filePath);
+          // Exclude documentation files that don't reflect current code state
+          return !/\.(md|txt|rst|adoc|asciidoc)$/i.test(filePath);
+        })
+        .map((chunk, index) => {
+          // Extract symbol from chunk content if possible
+          const symbolMatch = chunk.chunk.content.match(/(?:function|class|const|let|var)\s+(\w+)/);
+          const symbol = symbolMatch ? symbolMatch[1] : `semantic_match_${i}_${index + 1}`;
+
+          return {
+            symbol,
+            filePath: path.relative(process.cwd(), chunk.chunk.filePath),
+            line: chunk.chunk.metadata.startLine || 1,
+            context: chunk.chunk.content,
+            score: chunk.similarity * 100, // Convert to 0-100 scale for consistency
+            rank: 0, // Will be set later
+            reason: `semantic_similarity:${chunk.similarity.toFixed(3)} error_context:${error.errorType || 'unknown'}`,
+            embeddingSimilarity: chunk.similarity,
+            isEmbeddingMatch: true,
+          };
+        });
+
+      allSemanticMatches.push(...semanticMatches);
     }
 
-    logger.info('🎯 Found semantically similar code chunks', {
+    // Sort all matches by similarity and limit results
+    allSemanticMatches.sort((a, b) => (b.embeddingSimilarity || 0) - (a.embeddingSimilarity || 0));
+
+    logger.info('🎯 Completed focused semantic search across all errors', {
       projectId,
-      chunksFound: similarChunks.length,
-      topSimilarity: similarChunks[0]?.similarity,
+      totalErrorsProcessed: errors.length,
+      totalChunksFound: allSemanticMatches.length,
+      topSimilarity: allSemanticMatches[0]?.embeddingSimilarity,
+      similarityThreshold,
     });
 
-    // Convert SimilarChunk to SearchMatch format
-    const semanticMatches: SearchMatch[] = similarChunks.map((chunk, index) => {
-      // Extract symbol from chunk content if possible
-      const symbolMatch = chunk.chunk.content.match(/(?:function|class|const|let|var)\s+(\w+)/);
-      const symbol = symbolMatch ? symbolMatch[1] : `semantic_match_${index + 1}`;
-
-      return {
-        symbol,
-        filePath: path.relative(process.cwd(), chunk.chunk.filePath),
-        line: chunk.chunk.metadata.startLine || 1,
-        context: chunk.chunk.content,
-        score: chunk.similarity * 100, // Convert to 0-100 scale for consistency
-        rank: 0, // Will be set later
-        reason: `semantic_similarity:${chunk.similarity.toFixed(3)}`,
-        embeddingSimilarity: chunk.similarity,
-        isEmbeddingMatch: true,
-      };
-    });
-
-    return semanticMatches;
+    return allSemanticMatches.slice(0, maxSimilarChunks);
   } catch (error) {
     logger.warn('⚠️ Semantic similarity search failed', {
       error: error instanceof Error ? error.message : String(error),
@@ -716,10 +792,10 @@ export async function handleLocalDebugContext(args: any): Promise<DebugContextRe
         );
 
         if (embeddingsReady) {
-          // Search for semantically similar code
+          // Search for semantically similar code using focused error contexts
           const semanticMatches = await searchSemanticSimilarities(
             projectId,
-            logText,
+            errors,
             symbols,
             maxSimilarChunks,
             embeddingSimilarityThreshold
@@ -730,10 +806,14 @@ export async function handleLocalDebugContext(args: any): Promise<DebugContextRe
             embeddingsUsed = true;
             similarChunksFound = semanticMatches.length;
 
-            logger.info('🎯 Enhanced debug context with semantic matches', {
+            logger.info('🎯 Enhanced debug context with focused semantic matches', {
               originalMatches: matches.length,
               semanticMatches: semanticMatches.length,
               totalMatches: allMatches.length,
+              errorsProcessed: errors.length,
+              avgSimilarity:
+                semanticMatches.reduce((sum, m) => sum + (m.embeddingSimilarity || 0), 0) /
+                semanticMatches.length,
             });
           }
         }

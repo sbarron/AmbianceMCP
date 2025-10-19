@@ -24,6 +24,8 @@ export function determineTokenParameter(
   // Legacy models that still use max_tokens
   const isLegacyModel =
     normalizedModel.includes('gpt-4.1') ||
+    normalizedModel.includes('gpt-4o') ||
+    normalizedModel.includes('gpt-4o-mini') ||
     normalizedModel.includes('gpt-3.5') ||
     normalizedModel.includes('text-') ||
     normalizedModel.includes('davinci') ||
